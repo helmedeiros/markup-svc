@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — defines the port through which the markup service makes pricing decisions. One-method interface; concrete adapters wrap whichever underlying engine fits the workload.
+Accepted — first adapter (`internal/decider/inmemory`) ships in the same release window, wrapping bre-go's `engine/inmemory.Engine` behind the `Decider` port. The port has held its shape through integration; subsequent adapters reuse it unchanged.
 
 ## Context
 

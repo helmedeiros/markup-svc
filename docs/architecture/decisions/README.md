@@ -19,4 +19,4 @@ NNNN-short-decision-name.md
 
 | # | Title | Status |
 |---|---|---|
-| [0001](0001-domain-port.md) | Domain port: Decider interface for markup decisions | 🟡 Proposed |
+| [0001](0001-domain-port.md) | Domain port: Decider interface for markup decisions | ✅ Accepted |
