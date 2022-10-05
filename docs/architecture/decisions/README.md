@@ -20,3 +20,4 @@ NNNN-short-decision-name.md
 | # | Title | Status |
 |---|---|---|
 | [0001](0001-domain-port.md) | Domain port: Decider interface for markup decisions | ✅ Accepted |
+| [0002](0002-rule-format-csv.md) | Rule format: CSV with parser expressions | 🟡 Proposed |
