@@ -42,3 +42,21 @@ type Decider interface {
 // The returned Decision is zero-valued; callers decide whether to
 // apply a fallback or reject the request.
 var ErrNoMatch = errors.New("markup: no rule matched the request")
+
+// FactOf converts a Request into the fact map that bre-go's
+// parser.Condition tree evaluates against. The column-to-field
+// mapping is stable; a regression here silently breaks every
+// adapter, so it is pinned by a table-driven test. Amount is
+// intentionally absent: the parser grammar shipped today is
+// string/set only and cannot read a numeric field.
+func FactOf(req Request) map[string]interface{} {
+	return map[string]interface{}{
+		"product_id":    req.ProductID,
+		"category":      req.Category,
+		"customer_tier": req.CustomerTier,
+		"channel":       req.Channel,
+		"country":       req.Country,
+		"inventory":     req.Inventory,
+		"time_window":   req.TimeWindow,
+	}
+}
