@@ -12,6 +12,7 @@ import (
 	breengine "github.com/helmedeiros/bre-go/engine"
 	breinmemory "github.com/helmedeiros/bre-go/engine/inmemory"
 
+	"github.com/helmedeiros/markup-svc/internal/load"
 	"github.com/helmedeiros/markup-svc/internal/markup"
 )
 
@@ -28,6 +29,28 @@ type Rule struct {
 type Decider struct {
 	inner        *breinmemory.Engine
 	modelVersion string
+}
+
+// NewFromRules builds a Decider from loader-side rules (per ADR-0002).
+// Each Rule's pre-compiled parser.Condition is wrapped via markup.FactOf
+// into the typed func(markup.Request) bool that New takes; bre-go's
+// add-rule errors propagate as wrapped errors. modelVersion is the tag
+// every emitted Decision carries. load.Rule.Priority is intentionally
+// dropped here -- the inmemory adapter is "last action wins" per slice
+// order; the priority adapter is the one that consumes Priority.
+func NewFromRules(rules []load.Rule, modelVersion string) (*Decider, error) {
+	typed := make([]Rule, 0, len(rules))
+	for _, r := range rules {
+		cond := r.Condition
+		typed = append(typed, Rule{
+			Name: r.Name,
+			Condition: func(req markup.Request) bool {
+				return cond.Eval(markup.FactOf(req))
+			},
+			Factor: r.Factor,
+		})
+	}
+	return New(typed, modelVersion)
 }
 
 // New returns a Decider wired to rules with modelVersion as the tag

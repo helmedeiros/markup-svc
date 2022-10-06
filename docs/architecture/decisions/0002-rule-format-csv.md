@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — proposes CSV as the on-disk rule format consumed by every `markup.Decider` adapter. The condition column is an expression string compiled by bre-go's `parser.ParseToCondition` into a typed `parser.Condition` tree.
+Accepted — `internal/load.FromCSV` and `internal/decider/inmemory.NewFromRules` ship in the same release window and end-to-end integration tests confirm the round trip (CSV → `[]load.Rule` → `*inmemory.Decider` → `markup.Decision`). The `markup.FactOf` converter is a deliberate, documented bre-go coupling kept on the domain side so the column-to-field mapping is the single source of truth across every adapter.
 
 ## Context
 
