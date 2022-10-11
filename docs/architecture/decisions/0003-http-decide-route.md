@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — proposes the HTTP transport contract for the markup service. One route (`POST /decide`), JSON wire format defined in `internal/httpapi`, ErrNoMatch mapped to 404, request-scoped correlation ID propagated through context.
+Accepted — `internal/httpapi.Decide` and `internal/httpapi.WithCorrelationID` ship in the same release window. The handler covers all five status mappings (200 / 400 / 404 / 405 / 500); the middleware covers both the header-supplied and header-absent UUID-generation paths plus the (unreachable on healthy systems) `crypto/rand` failure path. ADR-0003's design held through implementation.
 
 ## Context
 
