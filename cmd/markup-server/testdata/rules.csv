@@ -1,0 +1,4 @@
+name,condition,factor,priority
+enterprise,customer_tier == 'enterprise',1.15,10
+br_peak,country == 'BR' AND time_window == 'peak',1.08,5
+default_consumer,customer_tier == 'consumer',1.02,0
