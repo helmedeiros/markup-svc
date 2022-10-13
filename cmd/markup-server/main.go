@@ -49,16 +49,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	decider, err := inmemory.NewFromRules(rules, *modelVersion)
+	handler, err := buildHandler(rules, *modelVersion)
 	if err != nil {
-		return fmt.Errorf("build decider: %w", err)
+		return err
 	}
-
-	mux := http.NewServeMux()
-	mux.Handle("/decide", httpapi.Decide(decider))
 	srv := &http.Server{
 		Addr:              *listen,
-		Handler:           httpapi.WithCorrelationID(mux),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -95,4 +92,18 @@ func loadRulesFromFile(path string) ([]load.Rule, error) {
 		return nil, fmt.Errorf("parse rules %q: %w", path, err)
 	}
 	return rules, nil
+}
+
+// buildHandler is the wiring seam between loaded rules and the served
+// HTTP handler: inmemory.Decider behind /decide behind the correlation
+// ID middleware. Exposed at package scope so end-to-end tests can
+// drive the full stack via httptest without spawning a real process.
+func buildHandler(rules []load.Rule, modelVersion string) (http.Handler, error) {
+	decider, err := inmemory.NewFromRules(rules, modelVersion)
+	if err != nil {
+		return nil, fmt.Errorf("build decider: %w", err)
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/decide", httpapi.Decide(decider))
+	return httpapi.WithCorrelationID(mux), nil
 }
