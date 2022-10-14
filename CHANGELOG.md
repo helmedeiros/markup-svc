@@ -7,14 +7,26 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.0.1] - 2022-10-14
+
+First usable build: `POST /decide` against a CSV-loaded inmemory `Decider`, with correlation IDs flowing through context to every Decision.
+
 ### Added
 
-- `internal/markup` package: typed `Request`, `Decision`, `Decider` interface, `ErrNoMatch` sentinel.
-- `internal/decider/inmemory`: first concrete `Decider`, wraps bre-go's `engine/inmemory.Engine`. Typed `Rule` (Name / Condition / Factor); `New(rules, modelVersion)` propagates bre-go's add-rule errors; `Decide` returns `markup.ErrNoMatch` on miss and populates Decision provenance (Rule from last-matched, ModelVersion, CorrelationID via `engine.CorrelationIDFromContext`, EngineAdapter as concrete type name).
-- `cmd/markup-server`: skeleton main package.
-- ADR-0001 (Accepted): domain port — Decider interface for markup decisions.
+- `internal/markup` package: typed `Request`, `Decision`, `Decider` port interface, `ErrNoMatch` sentinel, `FactOf` converter producing the fact map bre-go's `parser.Condition` evaluates against. The column-to-field mapping is the single source of truth across every adapter.
+- `internal/load` package: `FromCSV(io.Reader) ([]Rule, error)` reads CSVs with header `name,condition,factor,priority`; the condition column is compiled at load time by bre-go's `parser.ParseToCondition` into a typed `parser.Condition`. Per-row failures surface as `*LoadError` with the 1-indexed row number; `errors.Is`/`As` reach through.
+- `internal/decider/inmemory` package: first concrete `markup.Decider` adapter, wraps `bre-go/engine/inmemory.Engine`. `New(rules []Rule, modelVersion string)` takes typed Go closures (lightweight for unit tests); `NewFromRules(rules []load.Rule, modelVersion string)` wraps each pre-compiled `parser.Condition` via `markup.FactOf` (production path). `Decide` returns `markup.ErrNoMatch` on miss and populates Decision provenance (Rule, ModelVersion, CorrelationID via `engine.CorrelationIDFromContext`, EngineAdapter via concrete type name).
+- `internal/httpapi` package: `Decide(d markup.Decider) http.Handler` mounts the `POST /decide` route with unexported wire types (`decideRequest` / `decideResponse`) so JSON tags never bleed into the domain port. Error mapping: 200 (Decision), 400 (malformed / empty body), 404 (`ErrNoMatch`), 405 (`Allow: POST`), 500 (opaque). `WithCorrelationID` middleware reads `X-Correlation-ID` or generates a `crypto/rand`-backed UUID v4, injects via `engine.WithCorrelationID`, echoes on response.
+- `cmd/markup-server` binary: thin `main()` over `run(ctx, args, stdout, stderr)`. Flags `--rules` / `--listen` / `--model`; signal-driven graceful shutdown with a 5s drain; `buildHandler(rules, modelVersion)` is the wiring seam exercised by end-to-end tests.
+- ADR-0001 (Accepted): domain port — `Decider` interface for markup decisions.
+- ADR-0002 (Accepted): rule format — CSV with bre-go parser expressions.
+- ADR-0003 (Accepted): HTTP transport — `POST /decide` with internal JSON wire types and correlation ID middleware.
 - Dependency: `github.com/helmedeiros/bre-go v0.19.0` (first integration).
-- Makefile (lint / vet / test / cover / check-adrs / ci-local).
-- GitHub Actions CI workflow.
+- Makefile (lint / vet / test / cover / check-adrs / ci-local) with 80% coverage floor.
+- GitHub Actions CI workflow uploading coverage to Codecov.
 - Scripts: `check-adrs.sh` for ADR-index gate.
-- Project gitignore (excludes `*.local.md`).
+- README.md with quickstart, architecture table, HTTP contract table, ADR links, and CI + coverage badges.
+- Project `.gitignore` (excludes `*.local.md`).
+
+[Unreleased]: https://github.com/helmedeiros/markup-svc/compare/v0.0.1...HEAD
+[0.0.1]: https://github.com/helmedeiros/markup-svc/releases/tag/v0.0.1

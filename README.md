@@ -5,6 +5,7 @@ A dynamic markup service built on top of [bre-go](https://github.com/helmedeiros
 ## Status
 
 [![CI](https://github.com/helmedeiros/markup-svc/actions/workflows/ci.yml/badge.svg)](https://github.com/helmedeiros/markup-svc/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/helmedeiros/markup-svc/branch/main/graph/badge.svg)](https://codecov.io/gh/helmedeiros/markup-svc)
 
 Pre-release. Three accepted ADRs: the domain port, the CSV rule format, and the HTTP transport. The first usable build serves `POST /decide` against a CSV-loaded inmemory `Decider`.
 
@@ -81,4 +82,4 @@ See [ADR-0002](docs/architecture/decisions/0002-rule-format-csv.md) for the full
 
 ## Quality gates
 
-`make ci-local` runs `go vet`, race-detector tests, coverage (80% floor; current ~97%), and the ADR-index check. Mirrors the CI workflow.
+`make ci-local` runs `go vet`, race-detector tests, the coverage gate (80% floor), and the ADR-index check. Mirrors the CI workflow, which additionally uploads `coverage.out` to Codecov so the badge above tracks the live number.
