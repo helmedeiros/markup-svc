@@ -22,3 +22,4 @@ NNNN-short-decision-name.md
 | [0001](0001-domain-port.md) | Domain port: Decider interface for markup decisions | ✅ Accepted |
 | [0002](0002-rule-format-csv.md) | Rule format: CSV with parser expressions | ✅ Accepted |
 | [0003](0003-http-decide-route.md) | HTTP transport: POST /decide | ✅ Accepted |
+| [0004](0004-firstmatch-adapter.md) | First-match Decider adapter | 🟡 Proposed |
