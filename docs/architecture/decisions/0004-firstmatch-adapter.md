@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — proposes `internal/decider/firstmatch` as a second concrete `markup.Decider` adapter, wrapping bre-go's `engine/firstmatch.Engine`. Semantics: the first matching rule in insertion order fires and no others are evaluated.
+Accepted — `internal/decider/firstmatch` ships in the same release window. Unit tests pin the first-match-wins semantic, and a dedicated `TestSemanticDifferenceFromInmemory` integration test confirms that the same `[]load.Rule` produces different `Decision.Rule` values through `firstmatch.Decider` vs `inmemory.Decider` — which was the whole point of shipping the adapter as a peer rather than a replacement.
 
 ## Context
 
