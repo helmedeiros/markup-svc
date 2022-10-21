@@ -29,9 +29,14 @@ func loadTestRules(t *testing.T) []load.Rule {
 
 func newE2EServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	handler, err := buildHandler(loadTestRules(t), "v0-e2e")
+	return newE2EServerWith(t, "inmemory")
+}
+
+func newE2EServerWith(t *testing.T, adapter string) *httptest.Server {
+	t.Helper()
+	handler, err := buildHandler(adapter, loadTestRules(t), "v0-e2e")
 	if err != nil {
-		t.Fatalf("buildHandler: %v", err)
+		t.Fatalf("buildHandler(%q): %v", adapter, err)
 	}
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
@@ -171,8 +176,59 @@ func TestE2EMalformedJSONReturns400(t *testing.T) {
 func TestBuildHandlerPropagatesInmemoryError(t *testing.T) {
 	rules := loadTestRules(t)
 	rules = append(rules, load.Rule{Name: rules[0].Name, Condition: rules[0].Condition, Factor: 1.0, Priority: 0})
-	_, err := buildHandler(rules, "v0-e2e")
+	_, err := buildHandler("inmemory", rules, "v0-e2e")
 	if err == nil {
 		t.Fatal("want duplicate-rule error from inmemory.NewFromRules, got nil")
+	}
+}
+
+func TestBuildHandlerUnknownAdapterError(t *testing.T) {
+	_, err := buildHandler("not-a-real-adapter", loadTestRules(t), "v0-e2e")
+	if err == nil {
+		t.Fatal("want error for unknown adapter, got nil")
+	}
+	if !strings.Contains(err.Error(), "not-a-real-adapter") {
+		t.Errorf("error %q should name the bad adapter", err.Error())
+	}
+}
+
+// TestE2EAdapterSemanticDivergenceOverHTTP is the load-bearing test
+// for the --adapter flag: the same Request through the same CSV via
+// the HTTP wire returns different Decisions when --adapter switches
+// between inmemory and firstmatch. Three-way assertion mirrors the
+// ADR-0004 contract.
+func TestE2EAdapterSemanticDivergenceOverHTTP(t *testing.T) {
+	const body = `{"customer_tier":"enterprise","country":"BR","time_window":"peak"}`
+
+	inmemorySrv := newE2EServerWith(t, "inmemory")
+	imResp, err := http.Post(inmemorySrv.URL+"/decide", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("inmemory POST: %v", err)
+	}
+	defer imResp.Body.Close()
+	var imBody map[string]interface{}
+	_ = json.NewDecoder(imResp.Body).Decode(&imBody)
+
+	firstmatchSrv := newE2EServerWith(t, "firstmatch")
+	fmResp, err := http.Post(firstmatchSrv.URL+"/decide", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("firstmatch POST: %v", err)
+	}
+	defer fmResp.Body.Close()
+	var fmBody map[string]interface{}
+	_ = json.NewDecoder(fmResp.Body).Decode(&fmBody)
+
+	if imBody["rule"] == fmBody["rule"] {
+		t.Fatalf("expected adapter divergence: both picked rule=%v (inmemory=%+v firstmatch=%+v)",
+			imBody["rule"], imBody, fmBody)
+	}
+	if imBody["engine_adapter"] == fmBody["engine_adapter"] {
+		t.Errorf("engine_adapter should differ between adapters: both = %v", imBody["engine_adapter"])
+	}
+	if fmBody["rule"] != "enterprise" {
+		t.Errorf("firstmatch picked %v, want \"enterprise\" (first in CSV)", fmBody["rule"])
+	}
+	if imBody["rule"] != "br_peak" {
+		t.Errorf("inmemory picked %v, want \"br_peak\" (last matching action)", imBody["rule"])
 	}
 }

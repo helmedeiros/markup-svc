@@ -18,9 +18,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/helmedeiros/markup-svc/internal/decider/firstmatch"
 	"github.com/helmedeiros/markup-svc/internal/decider/inmemory"
 	"github.com/helmedeiros/markup-svc/internal/httpapi"
 	"github.com/helmedeiros/markup-svc/internal/load"
+	"github.com/helmedeiros/markup-svc/internal/markup"
 )
 
 func main() {
@@ -41,6 +43,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	rulesPath := fs.String("rules", "rules.csv", "path to CSV rule file (see ADR-0002)")
 	listen := fs.String("listen", ":8080", "HTTP listen address")
 	modelVersion := fs.String("model", "v1", "model version tag carried on every Decision")
+	adapter := fs.String("adapter", "inmemory", "Decider adapter: inmemory|firstmatch")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -49,7 +52,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	handler, err := buildHandler(rules, *modelVersion)
+	handler, err := buildHandler(*adapter, rules, *modelVersion)
 	if err != nil {
 		return err
 	}
@@ -61,7 +64,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	serverErr := make(chan error, 1)
 	go func() {
-		fmt.Fprintf(stdout, "markup-server: listening on %s (%d rules, model %s)\n", *listen, len(rules), *modelVersion)
+		fmt.Fprintf(stdout, "markup-server: listening on %s (%d rules, model %s, adapter %s)\n", *listen, len(rules), *modelVersion, *adapter)
 		err := srv.ListenAndServe()
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- err
@@ -95,15 +98,33 @@ func loadRulesFromFile(path string) ([]load.Rule, error) {
 }
 
 // buildHandler is the wiring seam between loaded rules and the served
-// HTTP handler: inmemory.Decider behind /decide behind the correlation
-// ID middleware. Exposed at package scope so end-to-end tests can
-// drive the full stack via httptest without spawning a real process.
-func buildHandler(rules []load.Rule, modelVersion string) (http.Handler, error) {
-	decider, err := inmemory.NewFromRules(rules, modelVersion)
+// HTTP handler: Decider behind /decide behind the correlation ID
+// middleware. The Decider is selected by adapter name; unknown names
+// surface as an error so a typo on the --adapter flag fails boot
+// fast rather than silently picking a default. Exposed at package
+// scope so end-to-end tests can drive the full stack via httptest
+// without spawning a real process.
+func buildHandler(adapter string, rules []load.Rule, modelVersion string) (http.Handler, error) {
+	decider, err := buildDecider(adapter, rules, modelVersion)
 	if err != nil {
-		return nil, fmt.Errorf("build decider: %w", err)
+		return nil, err
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/decide", httpapi.Decide(decider))
 	return httpapi.WithCorrelationID(mux), nil
+}
+
+// buildDecider dispatches on adapter name. Each branch is a single
+// call into the matching adapter package's NewFromRules; the
+// dispatcher itself owns no behaviour beyond the name -> constructor
+// mapping.
+func buildDecider(adapter string, rules []load.Rule, modelVersion string) (markup.Decider, error) {
+	switch adapter {
+	case "inmemory":
+		return inmemory.NewFromRules(rules, modelVersion)
+	case "firstmatch":
+		return firstmatch.NewFromRules(rules, modelVersion)
+	default:
+		return nil, fmt.Errorf("unknown adapter %q (want one of: inmemory, firstmatch)", adapter)
+	}
 }
