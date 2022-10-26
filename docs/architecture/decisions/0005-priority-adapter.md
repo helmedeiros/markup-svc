@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — proposes `internal/decider/priority` as the third concrete `markup.Decider` adapter, wrapping bre-go's `engine/priority.Engine`. Semantics: rules evaluate in descending priority order, the first matching rule fires, ties break by insertion order.
+Accepted — `internal/decider/priority` ships in the same release window. `TestSemanticDifferenceFromFirstmatch` confirms that when Priority disagrees with insertion order the priority adapter picks the higher-priority rule and the firstmatch adapter picks the earlier-inserted rule. `TestPriorityZeroDegradesToFirstmatch` confirms that when all priorities are equal the two adapters return identical Decisions for every Request — so a CSV migrated from firstmatch to priority with `priority = 0` everywhere produces identical behaviour.
 
 ## Context
 

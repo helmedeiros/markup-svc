@@ -23,4 +23,4 @@ NNNN-short-decision-name.md
 | [0002](0002-rule-format-csv.md) | Rule format: CSV with parser expressions | ✅ Accepted |
 | [0003](0003-http-decide-route.md) | HTTP transport: POST /decide | ✅ Accepted |
 | [0004](0004-firstmatch-adapter.md) | First-match Decider adapter | ✅ Accepted |
-| [0005](0005-priority-adapter.md) | Priority Decider adapter | 🟡 Proposed |
+| [0005](0005-priority-adapter.md) | Priority Decider adapter | ✅ Accepted |
