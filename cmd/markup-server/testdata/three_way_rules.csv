@@ -1,0 +1,4 @@
+name,condition,factor,priority
+rule_a,country == 'BR',1.20,50
+rule_b,channel == 'web',1.10,100
+rule_c,customer_tier == 'enterprise',1.30,5

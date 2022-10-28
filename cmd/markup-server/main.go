@@ -20,6 +20,7 @@ import (
 
 	"github.com/helmedeiros/markup-svc/internal/decider/firstmatch"
 	"github.com/helmedeiros/markup-svc/internal/decider/inmemory"
+	"github.com/helmedeiros/markup-svc/internal/decider/priority"
 	"github.com/helmedeiros/markup-svc/internal/httpapi"
 	"github.com/helmedeiros/markup-svc/internal/load"
 	"github.com/helmedeiros/markup-svc/internal/markup"
@@ -43,7 +44,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	rulesPath := fs.String("rules", "rules.csv", "path to CSV rule file (see ADR-0002)")
 	listen := fs.String("listen", ":8080", "HTTP listen address")
 	modelVersion := fs.String("model", "v1", "model version tag carried on every Decision")
-	adapter := fs.String("adapter", "inmemory", "Decider adapter: inmemory|firstmatch")
+	adapter := fs.String("adapter", "inmemory", "Decider adapter: inmemory|firstmatch|priority")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -124,7 +125,9 @@ func buildDecider(adapter string, rules []load.Rule, modelVersion string) (marku
 		return inmemory.NewFromRules(rules, modelVersion)
 	case "firstmatch":
 		return firstmatch.NewFromRules(rules, modelVersion)
+	case "priority":
+		return priority.NewFromRules(rules, modelVersion)
 	default:
-		return nil, fmt.Errorf("unknown adapter %q (want one of: inmemory, firstmatch)", adapter)
+		return nil, fmt.Errorf("unknown adapter %q (want one of: inmemory, firstmatch, priority)", adapter)
 	}
 }

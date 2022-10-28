@@ -10,8 +10,10 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Added
 
 - `internal/decider/firstmatch`: second concrete `markup.Decider` adapter, wraps bre-go's `engine/firstmatch.Engine`. Same `Rule` and `NewFromRules` shape as the inmemory adapter; semantics differ — insertion order is precedence and the first matching rule fires. Includes `TestSemanticDifferenceFromInmemory` pinning that the same `[]load.Rule` produces different `Decision.Rule` values through firstmatch vs inmemory.
-- `cmd/markup-server`: `--adapter` flag (`inmemory` | `firstmatch`, default `inmemory`); unknown names fail boot fast.
+- `internal/decider/priority`: third concrete adapter, wraps bre-go's `engine/priority.Engine`. `Rule` gains the `Priority int` field; `NewFromRules` finally consumes `load.Rule.Priority`. Higher Priority evaluates first, ties break by insertion order, and the adapter degenerates gracefully to firstmatch when all priorities are equal. Includes `TestSemanticDifferenceFromFirstmatch` and `TestPriorityZeroDegradesToFirstmatch` pinning both halves of the contract.
+- `cmd/markup-server`: `--adapter` flag now accepts `inmemory` | `firstmatch` | `priority` (default `inmemory`); unknown names fail boot fast. `TestE2EThreeWayAdapterDivergenceOverHTTP` confirms over the HTTP wire that the three adapters produce three distinct Decisions for the same Request through the same engineered CSV.
 - ADR-0004 (Accepted): first-match Decider adapter.
+- ADR-0005 (Accepted): priority Decider adapter.
 
 First usable build: `POST /decide` against a CSV-loaded inmemory `Decider`, with correlation IDs flowing through context to every Decision.
 

@@ -192,6 +192,31 @@ func TestBuildHandlerUnknownAdapterError(t *testing.T) {
 	}
 }
 
+func loadThreeWayRules(t *testing.T) []load.Rule {
+	t.Helper()
+	f, err := os.Open("testdata/three_way_rules.csv")
+	if err != nil {
+		t.Fatalf("open testdata/three_way_rules.csv: %v", err)
+	}
+	defer f.Close()
+	rules, err := load.FromCSV(f)
+	if err != nil {
+		t.Fatalf("load.FromCSV: %v", err)
+	}
+	return rules
+}
+
+func newThreeWayServer(t *testing.T, adapter string) *httptest.Server {
+	t.Helper()
+	handler, err := buildHandler(adapter, loadThreeWayRules(t), "v0-3way")
+	if err != nil {
+		t.Fatalf("buildHandler(%q): %v", adapter, err)
+	}
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
 // TestE2EAdapterSemanticDivergenceOverHTTP is the load-bearing test
 // for the --adapter flag: the same Request through the same CSV via
 // the HTTP wire returns different Decisions when --adapter switches
@@ -230,5 +255,56 @@ func TestE2EAdapterSemanticDivergenceOverHTTP(t *testing.T) {
 	}
 	if imBody["rule"] != "br_peak" {
 		t.Errorf("inmemory picked %v, want \"br_peak\" (last matching action)", imBody["rule"])
+	}
+}
+
+// TestE2EThreeWayAdapterDivergenceOverHTTP is the load-bearing test
+// for ADR-0004 + ADR-0005 together: the same Request through the same
+// CSV produces three distinct Decisions across the three adapters.
+// The CSV (testdata/three_way_rules.csv) is engineered so that
+// inmemory picks the last-inserted matching rule (rule_c),
+// firstmatch picks the first-inserted matching rule (rule_a),
+// priority picks the highest-Priority matching rule (rule_b).
+// Without this distinct three-way outcome, the (rules x adapter)
+// observability slice would collapse and the project's central
+// premise -- that the adapter axis is meaningfully observable --
+// would be unproven.
+func TestE2EThreeWayAdapterDivergenceOverHTTP(t *testing.T) {
+	const body = `{"country":"BR","channel":"web","customer_tier":"enterprise"}`
+
+	cases := []struct {
+		adapter   string
+		wantRule  string
+		wantSlice string
+	}{
+		{"inmemory", "rule_c", "*inmemory.Engine"},
+		{"firstmatch", "rule_a", "*firstmatch.Engine"},
+		{"priority", "rule_b", "*priority.Engine"},
+	}
+
+	got := make(map[string]string)
+	for _, tc := range cases {
+		srv := newThreeWayServer(t, tc.adapter)
+		resp, err := http.Post(srv.URL+"/decide", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("[%s] POST: %v", tc.adapter, err)
+		}
+		var b map[string]interface{}
+		_ = json.NewDecoder(resp.Body).Decode(&b)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("[%s] status = %d, want 200; body=%+v", tc.adapter, resp.StatusCode, b)
+		}
+		if b["rule"] != tc.wantRule {
+			t.Errorf("[%s] rule = %v, want %q", tc.adapter, b["rule"], tc.wantRule)
+		}
+		if b["engine_adapter"] != tc.wantSlice {
+			t.Errorf("[%s] engine_adapter = %v, want %q", tc.adapter, b["engine_adapter"], tc.wantSlice)
+		}
+		got[tc.adapter] = b["rule"].(string)
+	}
+
+	if got["inmemory"] == got["firstmatch"] || got["firstmatch"] == got["priority"] || got["inmemory"] == got["priority"] {
+		t.Errorf("three-way divergence collapsed: %+v", got)
 	}
 }
