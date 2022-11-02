@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — proposes `internal/decider/indexed` as the fourth concrete `markup.Decider` adapter, wrapping bre-go's `engine/indexed.Engine`. Semantics match firstmatch (insertion-order precedence, first match wins) but cost model differs: O(K) hash lookups per `Decide` instead of O(rules) linear scan.
+Accepted — `internal/decider/indexed` ships in the same release window. `TestSemanticEquivalenceWithFirstmatch` confirms that for the same `[]load.Rule` (constrained to indexable conditions) the indexed adapter returns the same `Decision.Rule` and `MarkupFactor` as the firstmatch adapter across a representative request matrix — which is the safety net for the sub-linear optimization. `TestNewFromRulesRejectsNonIndexableCondition` confirms the fail-fast posture at construction time for non-indexable rules.
 
 ## Context
 

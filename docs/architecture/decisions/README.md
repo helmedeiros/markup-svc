@@ -24,4 +24,4 @@ NNNN-short-decision-name.md
 | [0003](0003-http-decide-route.md) | HTTP transport: POST /decide | ✅ Accepted |
 | [0004](0004-firstmatch-adapter.md) | First-match Decider adapter | ✅ Accepted |
 | [0005](0005-priority-adapter.md) | Priority Decider adapter | ✅ Accepted |
-| [0006](0006-indexed-adapter.md) | Indexed Decider adapter | 🟡 Proposed |
+| [0006](0006-indexed-adapter.md) | Indexed Decider adapter | ✅ Accepted |
