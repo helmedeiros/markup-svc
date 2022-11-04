@@ -258,18 +258,21 @@ func TestE2EAdapterSemanticDivergenceOverHTTP(t *testing.T) {
 	}
 }
 
-// TestE2EThreeWayAdapterDivergenceOverHTTP is the load-bearing test
-// for ADR-0004 + ADR-0005 together: the same Request through the same
-// CSV produces three distinct Decisions across the three adapters.
-// The CSV (testdata/three_way_rules.csv) is engineered so that
-// inmemory picks the last-inserted matching rule (rule_c),
-// firstmatch picks the first-inserted matching rule (rule_a),
-// priority picks the highest-Priority matching rule (rule_b).
-// Without this distinct three-way outcome, the (rules x adapter)
-// observability slice would collapse and the project's central
-// premise -- that the adapter axis is meaningfully observable --
-// would be unproven.
-func TestE2EThreeWayAdapterDivergenceOverHTTP(t *testing.T) {
+// TestE2EFourAdapterMatrixOverHTTP is the load-bearing test for
+// ADR-0004 + ADR-0005 + ADR-0006 together: the same Request through
+// the same CSV produces a predictable Decision matrix across all four
+// shipped adapters. The CSV (testdata/three_way_rules.csv) is
+// engineered so that:
+//   - inmemory picks rule_c (last-inserted matching action wins)
+//   - firstmatch picks rule_a (insertion order)
+//   - priority picks rule_b (highest Priority)
+//   - indexed picks rule_a (insertion order, same semantic as firstmatch)
+// Indexed shares semantics with firstmatch and so is expected to agree
+// with it on this fixture; the value indexed adds is the sub-linear
+// cost model, not a new semantic. Three distinct rules across the
+// four adapters keeps the (rules x adapter) observability slice
+// meaningful.
+func TestE2EFourAdapterMatrixOverHTTP(t *testing.T) {
 	const body = `{"country":"BR","channel":"web","customer_tier":"enterprise"}`
 
 	cases := []struct {
@@ -280,6 +283,7 @@ func TestE2EThreeWayAdapterDivergenceOverHTTP(t *testing.T) {
 		{"inmemory", "rule_c", "*inmemory.Engine"},
 		{"firstmatch", "rule_a", "*firstmatch.Engine"},
 		{"priority", "rule_b", "*priority.Engine"},
+		{"indexed", "rule_a", "*indexed.Engine"},
 	}
 
 	got := make(map[string]string)
@@ -304,7 +308,13 @@ func TestE2EThreeWayAdapterDivergenceOverHTTP(t *testing.T) {
 		got[tc.adapter] = b["rule"].(string)
 	}
 
+	// Three distinct rules across four adapters: inmemory != firstmatch
+	// != priority. indexed agrees with firstmatch by design.
 	if got["inmemory"] == got["firstmatch"] || got["firstmatch"] == got["priority"] || got["inmemory"] == got["priority"] {
-		t.Errorf("three-way divergence collapsed: %+v", got)
+		t.Errorf("expected 3 distinct rules across (inmemory, firstmatch, priority): %+v", got)
+	}
+	if got["indexed"] != got["firstmatch"] {
+		t.Errorf("indexed and firstmatch should agree (insertion-order semantic): indexed=%q firstmatch=%q",
+			got["indexed"], got["firstmatch"])
 	}
 }

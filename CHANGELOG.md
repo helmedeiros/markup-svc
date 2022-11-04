@@ -7,13 +7,19 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.0.2] - 2022-11-04
+
+All four bre-go engine adapters now ship as concrete `markup.Decider` implementations. The `--adapter` flag selects which engine answers each Decision; the same CSV produces predictable Decision matrices across the four adapters per the new `TestE2EFourAdapterMatrixOverHTTP` proof.
+
 ### Added
 
 - `internal/decider/firstmatch`: second concrete `markup.Decider` adapter, wraps bre-go's `engine/firstmatch.Engine`. Same `Rule` and `NewFromRules` shape as the inmemory adapter; semantics differ — insertion order is precedence and the first matching rule fires. Includes `TestSemanticDifferenceFromInmemory` pinning that the same `[]load.Rule` produces different `Decision.Rule` values through firstmatch vs inmemory.
 - `internal/decider/priority`: third concrete adapter, wraps bre-go's `engine/priority.Engine`. `Rule` gains the `Priority int` field; `NewFromRules` finally consumes `load.Rule.Priority`. Higher Priority evaluates first, ties break by insertion order, and the adapter degenerates gracefully to firstmatch when all priorities are equal. Includes `TestSemanticDifferenceFromFirstmatch` and `TestPriorityZeroDegradesToFirstmatch` pinning both halves of the contract.
-- `cmd/markup-server`: `--adapter` flag now accepts `inmemory` | `firstmatch` | `priority` (default `inmemory`); unknown names fail boot fast. `TestE2EThreeWayAdapterDivergenceOverHTTP` confirms over the HTTP wire that the three adapters produce three distinct Decisions for the same Request through the same engineered CSV.
+- `internal/decider/indexed`: fourth concrete adapter, wraps bre-go's `engine/indexed.Engine`. `Rule.Match` is a typed `parser.Condition` (no closure) because the indexer inspects the AST to bucket each rule. Semantics match firstmatch (insertion-order precedence) but per-Decide cost is sub-linear: O(K) hash lookups instead of O(rules) linear scan. `New` calls the engine's `Build()` synchronously so seal-time errors surface at construction. Includes `TestSemanticEquivalenceWithFirstmatch` (the safety net for the optimization) and `TestNewFromRulesRejectsNonIndexableCondition` (fail-fast at construction).
+- `cmd/markup-server`: `--adapter` flag now accepts `inmemory` | `firstmatch` | `priority` | `indexed` (default `inmemory`); unknown names fail boot fast. `TestE2EFourAdapterMatrixOverHTTP` confirms over the HTTP wire that the four adapters produce the expected Decision matrix (three distinct rules; indexed agrees with firstmatch by design).
 - ADR-0004 (Accepted): first-match Decider adapter.
 - ADR-0005 (Accepted): priority Decider adapter.
+- ADR-0006 (Accepted): indexed Decider adapter.
 
 First usable build: `POST /decide` against a CSV-loaded inmemory `Decider`, with correlation IDs flowing through context to every Decision.
 
@@ -34,5 +40,6 @@ First usable build: `POST /decide` against a CSV-loaded inmemory `Decider`, with
 - README.md with quickstart, architecture table, HTTP contract table, ADR links, and CI + coverage badges.
 - Project `.gitignore` (excludes `*.local.md`).
 
-[Unreleased]: https://github.com/helmedeiros/markup-svc/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/helmedeiros/markup-svc/compare/v0.0.2...HEAD
+[0.0.2]: https://github.com/helmedeiros/markup-svc/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/helmedeiros/markup-svc/releases/tag/v0.0.1
