@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — proposes `internal/snapshot` as a markup-side wrapper around bre-go's `engine/indexed.Snapshot`. A snapshot is a build artifact: a CSV is compiled to a JSON file once, and the markup server cold-starts from the snapshot in place of the raw CSV. The indexed Decider rebuilds its bucket structure from the snapshot directly.
+Accepted — `internal/snapshot` ships in the same release window. `TestLoadIntoIndexedDeciderEquivalentToNewFromRules` confirms a Decider built from a snapshot produces identical Decisions to one built directly from rules across a 5-Request matrix. `TestLoadIntoIndexedDeciderRejectsMissingFactor` confirms the fail-fast posture: a snapshot whose `Factors` map omits a rule listed in the engine snapshot surfaces as `ErrMissingFactor` rather than a silent zero-factor Decision.
 
 ## Context
 

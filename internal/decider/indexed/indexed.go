@@ -63,6 +63,16 @@ func New(rules []Rule, modelVersion string) (*Decider, error) {
 	return &Decider{inner: e, modelVersion: modelVersion}, nil
 }
 
+// NewFromEngine wraps an externally-built engine behind the
+// markup.Decider port. Intended for the snapshot loader (ADR-0007):
+// the bre-go LoadSnapshot path returns an already-Built engine that
+// only needs the markup-side provenance (modelVersion + EngineAdapter)
+// to satisfy the Decider port. Production callers building from rules
+// should use New or NewFromRules instead.
+func NewFromEngine(engine *breindexed.Engine, modelVersion string) *Decider {
+	return &Decider{inner: engine, modelVersion: modelVersion}
+}
+
 // NewFromRules builds a Decider from loader-side rules (per ADR-0002
 // and ADR-0006). Each load.Rule.Condition (already a typed
 // parser.Condition) becomes Rule.Match directly -- no closure

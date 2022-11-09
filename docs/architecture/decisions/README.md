@@ -25,4 +25,4 @@ NNNN-short-decision-name.md
 | [0004](0004-firstmatch-adapter.md) | First-match Decider adapter | ✅ Accepted |
 | [0005](0005-priority-adapter.md) | Priority Decider adapter | ✅ Accepted |
 | [0006](0006-indexed-adapter.md) | Indexed Decider adapter | ✅ Accepted |
-| [0007](0007-snapshot-persistence.md) | Snapshot persistence for the indexed adapter | 🟡 Proposed |
+| [0007](0007-snapshot-persistence.md) | Snapshot persistence for the indexed adapter | ✅ Accepted |
