@@ -8,6 +8,17 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
+
+# One-time setup to wire the dynamic coverage badge:
+#   1. Create a public gist with one file `coverage.json` (any placeholder content).
+#   2. Generate a GitHub personal access token with `gist` scope.
+#   3. Add it as a repo secret named `GIST_SECRET`.
+#   4. Replace `GIST_ID` below with the gist's ID (the hex string in its URL).
+#   5. Update README.md badge URL to point at https://gist.githubusercontent.com/<user>/<GIST_ID>/raw/coverage.json
+# Until GIST_ID is set, the coverage-badge step skips silently; PR comments still post.
+env:
+  GIST_ID: ""
 
 jobs:
   build:
@@ -19,9 +30,37 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make ci-local
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+
+      - name: Compute coverage percentage
+        id: coverage
+        run: |
+          total=$(go tool cover -func=coverage.out | awk '/^total:/{print $3}' | tr -d '%')
+          echo "value=$total" >> "$GITHUB_OUTPUT"
+          if awk "BEGIN{exit ! ($total >= 90)}"; then
+            echo "color=brightgreen" >> "$GITHUB_OUTPUT"
+          elif awk "BEGIN{exit ! ($total >= 80)}"; then
+            echo "color=green" >> "$GITHUB_OUTPUT"
+          elif awk "BEGIN{exit ! ($total >= 70)}"; then
+            echo "color=yellow" >> "$GITHUB_OUTPUT"
+          else
+            echo "color=red" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update coverage badge on main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && env.GIST_ID != ''
+        uses: schneegans/dynamic-badges-action@v1.7.0
         with:
-          files: ./coverage.out
-          flags: unittests
-          fail_ci_if_error: false
+          auth: ${{ secrets.GIST_SECRET }}
+          gistID: ${{ env.GIST_ID }}
+          filename: coverage.json
+          label: coverage
+          message: ${{ steps.coverage.outputs.value }}%
+          color: ${{ steps.coverage.outputs.color }}
+
+      - name: Post coverage on PR
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: coverage
+          message: |
+            **Coverage**: ${{ steps.coverage.outputs.value }}% (floor: 80%)
