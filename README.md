@@ -5,9 +5,7 @@ A dynamic markup service built on top of [bre-go](https://github.com/helmedeiros
 ## Status
 
 [![CI](https://github.com/helmedeiros/markup-svc/actions/workflows/ci.yml/badge.svg)](https://github.com/helmedeiros/markup-svc/actions/workflows/ci.yml)
-<!-- Coverage badge: enable by replacing GIST_USER and GIST_ID after the one-time setup documented in .github/workflows/ci.yml.
-[![coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/GIST_USER/GIST_ID/raw/coverage.json)](https://github.com/helmedeiros/markup-svc/actions/workflows/ci.yml)
--->
+[![coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/helmedeiros/markup-svc/badges/coverage.json)](https://github.com/helmedeiros/markup-svc/actions/workflows/ci.yml)
 
 Pre-release. Three accepted ADRs: the domain port, the CSV rule format, and the HTTP transport. The first usable build serves `POST /decide` against a CSV-loaded inmemory `Decider`.
 
@@ -84,4 +82,4 @@ See [ADR-0002](docs/architecture/decisions/0002-rule-format-csv.md) for the full
 
 ## Quality gates
 
-`make ci-local` runs `go vet`, race-detector tests, the coverage gate (80% floor), and the ADR-index check. Mirrors the CI workflow, which additionally computes the total coverage from `coverage.out`, posts it as a sticky PR comment on pull requests, and (once configured per `.github/workflows/ci.yml`) updates a shields.io endpoint badge on every push to `main`.
+`make ci-local` runs `go vet`, race-detector tests, the coverage gate (80% floor), and the ADR-index check. Mirrors the CI workflow, which additionally computes the total coverage from `coverage.out`, posts it as a sticky PR comment on pull requests, and writes the live number to the orphan `badges` branch so the shields.io badge above auto-updates on every push to `main`.

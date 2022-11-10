@@ -7,18 +7,8 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
-
-# One-time setup to wire the dynamic coverage badge:
-#   1. Create a public gist with one file `coverage.json` (any placeholder content).
-#   2. Generate a GitHub personal access token with `gist` scope.
-#   3. Add it as a repo secret named `GIST_SECRET`.
-#   4. Replace `GIST_ID` below with the gist's ID (the hex string in its URL).
-#   5. Update README.md badge URL to point at https://gist.githubusercontent.com/<user>/<GIST_ID>/raw/coverage.json
-# Until GIST_ID is set, the coverage-badge step skips silently; PR comments still post.
-env:
-  GIST_ID: ""
 
 jobs:
   build:
@@ -46,16 +36,32 @@ jobs:
             echo "color=red" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Update coverage badge on main
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && env.GIST_ID != ''
-        uses: schneegans/dynamic-badges-action@v1.7.0
-        with:
-          auth: ${{ secrets.GIST_SECRET }}
-          gistID: ${{ env.GIST_ID }}
-          filename: coverage.json
-          label: coverage
-          message: ${{ steps.coverage.outputs.value }}%
-          color: ${{ steps.coverage.outputs.color }}
+      # On main: write coverage.json to the orphan `badges` branch so
+      # shields.io can render the badge from the raw GitHub URL. Uses the
+      # built-in GITHUB_TOKEN (no PAT, no repo secret). The badges branch
+      # does not match the trigger filter above so this push does not
+      # loop the workflow.
+      - name: Update coverage badge branch
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          COV_VALUE: ${{ steps.coverage.outputs.value }}
+          COV_COLOR: ${{ steps.coverage.outputs.color }}
+        run: |
+          git fetch origin badges
+          git worktree add ../badges-wt badges
+          cat > ../badges-wt/coverage.json << EOF
+          {"schemaVersion":1,"label":"coverage","message":"${COV_VALUE}%","color":"${COV_COLOR}"}
+          EOF
+          cd ../badges-wt
+          if git diff --quiet; then
+            echo "coverage unchanged -- no commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add coverage.json
+          git commit -m "ci(coverage): ${COV_VALUE}% on ${GITHUB_SHA:0:8}"
+          git push origin badges
 
       - name: Post coverage on PR
         if: github.event_name == 'pull_request'
