@@ -25,6 +25,7 @@ import (
 	"github.com/helmedeiros/markup-svc/internal/httpapi"
 	"github.com/helmedeiros/markup-svc/internal/load"
 	"github.com/helmedeiros/markup-svc/internal/markup"
+	"github.com/helmedeiros/markup-svc/internal/snapshot"
 )
 
 func main() {
@@ -42,21 +43,50 @@ func main() {
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("markup-server", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	rulesPath := fs.String("rules", "rules.csv", "path to CSV rule file (see ADR-0002)")
+	rulesPath := fs.String("rules", "", "path to CSV rule file (see ADR-0002); mutually exclusive with --snapshot")
+	snapshotPath := fs.String("snapshot", "", "path to snapshot JSON (see ADR-0007); cold-starts the indexed adapter; mutually exclusive with --rules")
 	listen := fs.String("listen", ":8080", "HTTP listen address")
-	modelVersion := fs.String("model", "v1", "model version tag carried on every Decision")
-	adapter := fs.String("adapter", "inmemory", "Decider adapter: inmemory|firstmatch|priority|indexed")
+	modelVersion := fs.String("model", "v1", "model version tag carried on every Decision (overridden by snapshot's ModelVersion when --snapshot is set)")
+	adapter := fs.String("adapter", "inmemory", "Decider adapter: inmemory|firstmatch|priority|indexed (ignored when --snapshot is set; snapshots are indexed-only)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	rules, err := loadRulesFromFile(*rulesPath)
-	if err != nil {
-		return err
+	if *rulesPath != "" && *snapshotPath != "" {
+		return fmt.Errorf("--rules and --snapshot are mutually exclusive")
 	}
-	handler, err := buildHandler(*adapter, rules, *modelVersion)
-	if err != nil {
-		return err
+	if *rulesPath == "" && *snapshotPath == "" {
+		return fmt.Errorf("one of --rules or --snapshot is required")
+	}
+
+	var (
+		handler     http.Handler
+		ruleCount   int
+		bootSource  string
+		bootAdapter string
+		bootModel   = *modelVersion
+		err         error
+	)
+	if *snapshotPath != "" {
+		handler, ruleCount, bootModel, err = handlerFromSnapshot(*snapshotPath)
+		if err != nil {
+			return err
+		}
+		bootSource = *snapshotPath
+		bootAdapter = "indexed"
+	} else {
+		var rules []load.Rule
+		rules, err = loadRulesFromFile(*rulesPath)
+		if err != nil {
+			return err
+		}
+		handler, err = buildHandler(*adapter, rules, *modelVersion)
+		if err != nil {
+			return err
+		}
+		ruleCount = len(rules)
+		bootSource = *rulesPath
+		bootAdapter = *adapter
 	}
 	srv := &http.Server{
 		Addr:              *listen,
@@ -66,7 +96,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	serverErr := make(chan error, 1)
 	go func() {
-		fmt.Fprintf(stdout, "markup-server: listening on %s (%d rules, model %s, adapter %s)\n", *listen, len(rules), *modelVersion, *adapter)
+		fmt.Fprintf(stdout, "markup-server: listening on %s (%d rules, model %s, adapter %s, source %s)\n",
+			*listen, ruleCount, bootModel, bootAdapter, bootSource)
 		err := srv.ListenAndServe()
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- err
@@ -97,6 +128,29 @@ func loadRulesFromFile(path string) ([]load.Rule, error) {
 		return nil, fmt.Errorf("parse rules %q: %w", path, err)
 	}
 	return rules, nil
+}
+
+// handlerFromSnapshot is the cold-start path for ADR-0007: read the
+// snapshot JSON, reconstitute the indexed Decider, return the wired
+// http.Handler plus the snapshot's rule count and model version so
+// the startup log line accurately reflects what is serving traffic.
+func handlerFromSnapshot(path string) (http.Handler, int, string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, 0, "", fmt.Errorf("open snapshot %q: %w", path, err)
+	}
+	defer f.Close()
+	snap, err := snapshot.Read(f)
+	if err != nil {
+		return nil, 0, "", fmt.Errorf("read snapshot %q: %w", path, err)
+	}
+	decider, err := snapshot.LoadIntoIndexedDecider(snap)
+	if err != nil {
+		return nil, 0, "", fmt.Errorf("load snapshot %q: %w", path, err)
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/decide", httpapi.Decide(decider))
+	return httpapi.WithCorrelationID(mux), len(snap.EngineSnapshot.Rules), snap.ModelVersion, nil
 }
 
 // buildHandler is the wiring seam between loaded rules and the served
