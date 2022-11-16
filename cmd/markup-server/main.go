@@ -22,6 +22,7 @@ import (
 	"github.com/helmedeiros/markup-svc/internal/decider/indexed"
 	"github.com/helmedeiros/markup-svc/internal/decider/inmemory"
 	"github.com/helmedeiros/markup-svc/internal/decider/priority"
+	"github.com/helmedeiros/markup-svc/internal/decider/swap"
 	"github.com/helmedeiros/markup-svc/internal/httpapi"
 	"github.com/helmedeiros/markup-svc/internal/load"
 	"github.com/helmedeiros/markup-svc/internal/markup"
@@ -60,34 +61,26 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 
 	var (
-		handler     http.Handler
-		ruleCount   int
+		loader      httpapi.Loader
 		bootSource  string
 		bootAdapter string
-		bootModel   = *modelVersion
-		err         error
 	)
 	if *snapshotPath != "" {
-		handler, ruleCount, bootModel, err = handlerFromSnapshot(*snapshotPath)
-		if err != nil {
-			return err
-		}
+		loader = snapshotLoader(*snapshotPath, stderr)
 		bootSource = *snapshotPath
 		bootAdapter = "indexed"
 	} else {
-		var rules []load.Rule
-		rules, err = loadRulesFromFile(*rulesPath)
-		if err != nil {
-			return err
-		}
-		handler, err = buildHandler(*adapter, rules, *modelVersion)
-		if err != nil {
-			return err
-		}
-		ruleCount = len(rules)
+		loader = rulesLoader(*rulesPath, *adapter, *modelVersion, stderr)
 		bootSource = *rulesPath
 		bootAdapter = *adapter
 	}
+
+	handler, initialResult, err := wireHandler(loader)
+	if err != nil {
+		return err
+	}
+	ruleCount := initialResult.RuleCount
+	bootModel := initialResult.ModelVersion
 	srv := &http.Server{
 		Addr:              *listen,
 		Handler:           handler,
@@ -130,27 +123,78 @@ func loadRulesFromFile(path string) ([]load.Rule, error) {
 	return rules, nil
 }
 
-// handlerFromSnapshot is the cold-start path for ADR-0007: read the
-// snapshot JSON, reconstitute the indexed Decider, return the wired
-// http.Handler plus the snapshot's rule count and model version so
-// the startup log line accurately reflects what is serving traffic.
-func handlerFromSnapshot(path string) (http.Handler, int, string, error) {
-	f, err := os.Open(path)
+// wireHandler runs loader once for the initial Decider, wraps it in a
+// swap.Decider holder, mounts /decide on the holder, and mounts
+// /admin/reload on the same holder + loader so hot reloads re-run
+// the same load path against the current file contents. The
+// returned http.Handler is the production wiring -- same shape used
+// by tests so they exercise the real seam.
+func wireHandler(loader httpapi.Loader) (http.Handler, httpapi.ReloadResult, error) {
+	initial, result, err := loader()
 	if err != nil {
-		return nil, 0, "", fmt.Errorf("open snapshot %q: %w", path, err)
+		return nil, httpapi.ReloadResult{}, err
 	}
-	defer f.Close()
-	snap, err := snapshot.Read(f)
-	if err != nil {
-		return nil, 0, "", fmt.Errorf("read snapshot %q: %w", path, err)
-	}
-	decider, err := snapshot.LoadIntoIndexedDecider(snap)
-	if err != nil {
-		return nil, 0, "", fmt.Errorf("load snapshot %q: %w", path, err)
-	}
+	holder := swap.New(initial)
 	mux := http.NewServeMux()
-	mux.Handle("/decide", httpapi.Decide(decider))
-	return httpapi.WithCorrelationID(mux), len(snap.EngineSnapshot.Rules), snap.ModelVersion, nil
+	mux.Handle("/decide", httpapi.Decide(holder))
+	mux.Handle("/admin/reload", httpapi.Reload(holder, loader))
+	return httpapi.WithCorrelationID(mux), result, nil
+}
+
+// snapshotLoader is the boot-time-capturing loader for the --snapshot
+// path. Reads the file fresh on every call (boot + reload), validates
+// FormatVersion via snapshot.Read, and returns the rebuilt indexed
+// Decider along with rule count + ModelVersion for the response body.
+// Errors are logged to stderr so operators see the underlying detail
+// the handler keeps out of the response. See ADR-0007 and ADR-0008.
+func snapshotLoader(path string, stderr io.Writer) httpapi.Loader {
+	return func() (markup.Decider, httpapi.ReloadResult, error) {
+		f, err := os.Open(path)
+		if err != nil {
+			fmt.Fprintf(stderr, "snapshot loader: open %q: %v\n", path, err)
+			return nil, httpapi.ReloadResult{}, fmt.Errorf("open snapshot %q: %w", path, err)
+		}
+		defer f.Close()
+		snap, err := snapshot.Read(f)
+		if err != nil {
+			fmt.Fprintf(stderr, "snapshot loader: read %q: %v\n", path, err)
+			return nil, httpapi.ReloadResult{}, fmt.Errorf("read snapshot %q: %w", path, err)
+		}
+		decider, err := snapshot.LoadIntoIndexedDecider(snap)
+		if err != nil {
+			fmt.Fprintf(stderr, "snapshot loader: load %q: %v\n", path, err)
+			return nil, httpapi.ReloadResult{}, fmt.Errorf("load snapshot %q: %w", path, err)
+		}
+		return decider, httpapi.ReloadResult{
+			RuleCount:    len(snap.EngineSnapshot.Rules),
+			ModelVersion: snap.ModelVersion,
+		}, nil
+	}
+}
+
+// rulesLoader is the boot-time-capturing loader for the --rules path.
+// Reads the CSV fresh on every call, builds the configured adapter,
+// and returns rule count + the boot-time ModelVersion. The
+// ModelVersion comes from the --model flag because the CSV does not
+// carry one; operators who want a tag bump through reload restart
+// the process. See ADR-0008.
+func rulesLoader(path, adapter, modelVersion string, stderr io.Writer) httpapi.Loader {
+	return func() (markup.Decider, httpapi.ReloadResult, error) {
+		rules, err := loadRulesFromFile(path)
+		if err != nil {
+			fmt.Fprintf(stderr, "rules loader: %v\n", err)
+			return nil, httpapi.ReloadResult{}, err
+		}
+		decider, err := buildDecider(adapter, rules, modelVersion)
+		if err != nil {
+			fmt.Fprintf(stderr, "rules loader: build decider: %v\n", err)
+			return nil, httpapi.ReloadResult{}, fmt.Errorf("build decider: %w", err)
+		}
+		return decider, httpapi.ReloadResult{
+			RuleCount:    len(rules),
+			ModelVersion: modelVersion,
+		}, nil
+	}
 }
 
 // buildHandler is the wiring seam between loaded rules and the served

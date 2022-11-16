@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -41,15 +42,15 @@ func writeSnapshot(t *testing.T, modelVersion string) string {
 // engine adapter slice.
 func TestE2ESnapshotPathOverHTTP(t *testing.T) {
 	path := writeSnapshot(t, "v0-snap")
-	handler, ruleCount, modelVersion, err := handlerFromSnapshot(path)
+	handler, result, err := wireHandler(snapshotLoader(path, io.Discard))
 	if err != nil {
-		t.Fatalf("handlerFromSnapshot: %v", err)
+		t.Fatalf("wireHandler: %v", err)
 	}
-	if ruleCount != 3 {
-		t.Errorf("ruleCount = %d, want 3", ruleCount)
+	if result.RuleCount != 3 {
+		t.Errorf("RuleCount = %d, want 3", result.RuleCount)
 	}
-	if modelVersion != "v0-snap" {
-		t.Errorf("modelVersion = %q, want \"v0-snap\"", modelVersion)
+	if result.ModelVersion != "v0-snap" {
+		t.Errorf("ModelVersion = %q, want \"v0-snap\"", result.ModelVersion)
 	}
 
 	srv := httptest.NewServer(handler)
@@ -80,8 +81,9 @@ func TestE2ESnapshotPathOverHTTP(t *testing.T) {
 	}
 }
 
-func TestHandlerFromSnapshotRejectsMissingFile(t *testing.T) {
-	_, _, _, err := handlerFromSnapshot(filepath.Join(t.TempDir(), "does-not-exist.json"))
+func TestSnapshotLoaderRejectsMissingFile(t *testing.T) {
+	loader := snapshotLoader(filepath.Join(t.TempDir(), "does-not-exist.json"), io.Discard)
+	_, _, err := loader()
 	if err == nil {
 		t.Fatal("want open error, got nil")
 	}
@@ -90,12 +92,13 @@ func TestHandlerFromSnapshotRejectsMissingFile(t *testing.T) {
 	}
 }
 
-func TestHandlerFromSnapshotRejectsMalformedJSON(t *testing.T) {
+func TestSnapshotLoaderRejectsMalformedJSON(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bad.json")
 	if err := os.WriteFile(path, []byte("not json"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, _, _, err := handlerFromSnapshot(path)
+	loader := snapshotLoader(path, io.Discard)
+	_, _, err := loader()
 	if err == nil {
 		t.Fatal("want read error, got nil")
 	}

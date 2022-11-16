@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — proposes `POST /admin/reload` backed by a thin atomic holder around `markup.Decider`. The endpoint reads the latest CSV (or snapshot) from disk, builds a fresh Decider, and atomically replaces the active Decider so subsequent `/decide` calls see the new rule set without a process restart.
+Accepted — `internal/decider/swap` and `internal/httpapi.Reload` ship in the same release window. The implementation refines this ADR's "RLock held for the duration of Decide" guarantee to the stricter "RLock held only long enough to copy the inner pointer" shape: a concurrent Swap is never blocked by in-flight engine work, and in-flight Decides finish on their captured inner concurrently with the new Decider serving new requests. `TestE2EReloadChangesDecisionsOverHTTP` confirms the load-bearing promise (POST /admin/reload after editing the CSV on disk changes the next /decide's MarkupFactor); `TestE2EReloadFailureKeepsOldDecider` confirms the no-partial-update posture (a malformed CSV produces 500 and the previous Decider keeps serving).
 
 ## Context
 
@@ -42,13 +42,13 @@ The active Decider is held behind a thin holder type that synchronizes reads and
 - Every `Decide` call acquires a read lock for the duration of the call.
 - The swap acquires a write lock just long enough to replace the inner Decider pointer.
 
-With `sync.RWMutex`:
+With `sync.RWMutex`, the holder follows a minimum-lock-hold shape: `RLock`, copy the inner pointer to a local variable, `RUnlock`, then call `inner.Decide(ctx, req)`. The captured `inner` stays alive through the local variable for the duration of the call, so:
 
-- A `Decide` call already past the `RLock` sees its captured Decider through to completion. Held the way Go's RWMutex works, the call cannot be interrupted by a writer — the swap waits.
-- A `Decide` call arriving during the swap waits for the `Lock` to release, then sees the new Decider.
-- The old Decider is garbage-collected once no `Decide` call retains a reference.
+- A `Decide` call that has already copied its inner sees that captured Decider through to completion. The swap is never blocked by engine work — it just waits for the (sub-microsecond) RLock-during-copy windows to clear.
+- A `Decide` call arriving while a writer holds the Lock waits for the swap to complete, then captures the new inner.
+- The old Decider is garbage-collected once no in-flight `Decide` retains its captured reference.
 
-Per-`Decide` overhead is one `RLock` + `RUnlock`. Uncontended RWMutex RLock is `sync/atomic`-backed: tens of nanoseconds on commodity hardware. Against the engine's per-rule `Eval` cost (microseconds at typical rule-set sizes), invisible.
+Per-`Decide` overhead is one `RLock` + `RUnlock` plus one pointer copy. Uncontended RWMutex RLock is `sync/atomic`-backed: tens of nanoseconds on commodity hardware. Against the engine's per-rule `Eval` cost (microseconds at typical rule-set sizes), invisible.
 
 **Alternative considered**: `atomic.Pointer[markup.Decider]`. Not available at the project's Go 1.18 baseline. `atomic.Value` works in 1.18 but its `Store` panics if the concrete stored type changes between calls — using it would require wrapping every Decider in a stable struct type before storing. The RWMutex approach is type-safe, well-understood, and the overhead is negligible at any practical QPS.
 
