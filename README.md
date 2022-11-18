@@ -74,6 +74,10 @@ See [ADR-0002](docs/architecture/decisions/0002-rule-format-csv.md) for the full
 
 `X-Correlation-ID` flows in via header or is generated as UUID v4 and is echoed on every response. See [ADR-0003](docs/architecture/decisions/0003-http-decide-route.md).
 
+## Hot reload
+
+`POST /admin/reload` re-reads the boot-time source (`--rules` CSV or `--snapshot` JSON) from disk, builds a fresh `Decider`, and atomically swaps it into the active holder. In-flight `/decide` calls finish on their captured Decider; new calls land on the swapped one. On success: `200` with `{"rule_count": N, "model_version": "..."}`. On failure (parse error, build error): `500` with an opaque body and the previous Decider keeps serving. See [ADR-0008](docs/architecture/decisions/0008-hot-reload.md).
+
 ## Architecture Decision Records
 
 - [ADR-0001](docs/architecture/decisions/0001-domain-port.md) — Domain port: `Decider` interface
