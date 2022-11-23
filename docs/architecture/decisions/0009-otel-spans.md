@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — proposes `internal/observability/otel.Wrap(markup.Decider, trace.Tracer) markup.Decider` as a `markup.Decider`-port decorator that emits one OpenTelemetry span per `Decide` call. Attributes are markup-domain (rule, factor, model version, adapter), not bre-go-engine internals. `ErrNoMatch` is treated as a domain outcome, not an error — propagated on the span as a boolean attribute so dashboards can slice on "no-match rate" without polluting "error rate".
+Accepted — `internal/observability/otel.Wrap` ships in the same release window. Unit tests using OTel's `tracetest.SpanRecorder` cover every row of the per-outcome table by asserting both the span status and the attribute set; `TestWrapErrNoMatchSetsAttributeNotErrorStatus` and `TestWrapCanceledSetsCanceledAttributesNotErrorStatus` pin the domain-outcome and cancellation framings respectively (no `codes.Error` on either path). The `markup.Decider`-port decorator pattern composes with `swap.Decider` cleanly: tests confirm Decisions round-trip through the wrapper unchanged.
 
 ## Context
 
