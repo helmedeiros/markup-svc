@@ -18,6 +18,9 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/helmedeiros/markup-svc/internal/decider/firstmatch"
 	"github.com/helmedeiros/markup-svc/internal/decider/indexed"
 	"github.com/helmedeiros/markup-svc/internal/decider/inmemory"
@@ -26,6 +29,7 @@ import (
 	"github.com/helmedeiros/markup-svc/internal/httpapi"
 	"github.com/helmedeiros/markup-svc/internal/load"
 	"github.com/helmedeiros/markup-svc/internal/markup"
+	mkotel "github.com/helmedeiros/markup-svc/internal/observability/otel"
 	"github.com/helmedeiros/markup-svc/internal/snapshot"
 )
 
@@ -49,6 +53,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	listen := fs.String("listen", ":8080", "HTTP listen address")
 	modelVersion := fs.String("model", "v1", "model version tag carried on every Decision (overridden by snapshot's ModelVersion when --snapshot is set)")
 	adapter := fs.String("adapter", "inmemory", "Decider adapter: inmemory|firstmatch|priority|indexed (ignored when --snapshot is set; snapshots are indexed-only)")
+	otelEnabled := fs.Bool("otel-enabled", false, "wrap Decide calls in OpenTelemetry spans (see ADR-0009); spans emit via the no-op tracer unless an exporter is configured via OTel SDK env vars")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -75,7 +80,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		bootAdapter = *adapter
 	}
 
-	handler, initialResult, err := wireHandler(loader)
+	var tracer trace.Tracer
+	if *otelEnabled {
+		tracer = otel.Tracer("github.com/helmedeiros/markup-svc/cmd/markup-server")
+	}
+	handler, initialResult, err := wireTracedHandler(loader, tracer)
 	if err != nil {
 		return err
 	}
@@ -130,13 +139,28 @@ func loadRulesFromFile(path string) ([]load.Rule, error) {
 // returned http.Handler is the production wiring -- same shape used
 // by tests so they exercise the real seam.
 func wireHandler(loader httpapi.Loader) (http.Handler, httpapi.ReloadResult, error) {
+	return wireTracedHandler(loader, nil)
+}
+
+// wireTracedHandler is wireHandler with an optional OpenTelemetry
+// tracer. When tracer is non-nil the otel decorator wraps the
+// swap.Decider holder (not the other way round): the /decide call
+// chain is traced -> holder -> inner so a hot reload that swaps
+// holder's inner still flows through the traced layer and continues
+// emitting spans. The /admin/reload route keeps calling holder.Swap
+// directly -- swaps are administrative, not user traffic.
+func wireTracedHandler(loader httpapi.Loader, tracer trace.Tracer) (http.Handler, httpapi.ReloadResult, error) {
 	initial, result, err := loader()
 	if err != nil {
 		return nil, httpapi.ReloadResult{}, err
 	}
 	holder := swap.New(initial)
+	var decideDecider markup.Decider = holder
+	if tracer != nil {
+		decideDecider = mkotel.Wrap(holder, tracer)
+	}
 	mux := http.NewServeMux()
-	mux.Handle("/decide", httpapi.Decide(holder))
+	mux.Handle("/decide", httpapi.Decide(decideDecider))
 	mux.Handle("/admin/reload", httpapi.Reload(holder, loader))
 	return httpapi.WithCorrelationID(mux), result, nil
 }

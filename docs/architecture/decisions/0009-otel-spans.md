@@ -77,7 +77,7 @@ Per-`Decide` behaviour:
 
 `AttrCorrelationID` always tries to read from the context via `engine.CorrelationIDFromContext` (the existing identity carrier from ADR-0003).
 
-`cmd/markup-server` wires the wrapper via a new `--otel-enabled` flag (defaulting off so the toolchain stays clean for callers who do not need traces). When set, `wireHandler` composes `otel.Wrap` around the loaded Decider before handing it to the `swap.Decider` holder so the swap stays the outermost decorator.
+`cmd/markup-server` wires the wrapper via a new `--otel-enabled` flag (defaulting off so the toolchain stays clean for callers who do not need traces). When set, `wireHandler` composes `otel.Wrap` *around* the `swap.Decider` holder, not inside it. The call chain on `/decide` is `traced → holder → inner`; on reload, `holder.Swap(next)` replaces the inner, and the next `/decide` flows through the same `traced → holder` outer layers onto the new inner — so spans continue to be emitted across reloads. The reload route (`/admin/reload`) keeps calling `holder.Swap` directly because the swap is administrative, not user traffic, and does not need tracing.
 
 ## Consequences
 
