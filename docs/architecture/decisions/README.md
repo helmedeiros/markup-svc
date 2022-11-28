@@ -28,3 +28,4 @@ NNNN-short-decision-name.md
 | [0007](0007-snapshot-persistence.md) | Snapshot persistence for the indexed adapter | ✅ Accepted |
 | [0008](0008-hot-reload.md) | Hot reload via admin endpoint | ✅ Accepted |
 | [0009](0009-otel-spans.md) | OpenTelemetry spans at the Decider port | ✅ Accepted |
+| [0010](0010-metrics-port.md) | Metrics port at the Decider layer | 🟡 Proposed |
