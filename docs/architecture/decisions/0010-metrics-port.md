@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — proposes `internal/observability/metrics` as the markup-side metrics port: a typed `DecisionMetric` event, a `Sink` interface that consumes events, and a `Wrap(markup.Decider, Sink)` decorator that emits one event per `Decide`. Symmetric to the OTel span decorator from ADR-0009 — same port (markup.Decider), same composition shape, same outcome classification — but push-based aggregation through a sink instead of trace export. Backends (Prometheus, OTel metrics, custom) implement `Sink`; markup-svc owns the contract.
+Accepted — `internal/observability/metrics` ships in the same release window. Unit tests cover every row of the per-outcome table (success / no-match / canceled / deadline / other error), and `TestDecisionMetricFieldSetInvariants` pins the mutual-exclusivity rules end-to-end through the decorator. `TestComposesWithOTelDecorator` confirms `metrics.Wrap(otel.Wrap(stub))` produces both a recorded metric AND a recorded span on every Decide, validating the composition order recommended for cmd integration. `TestRecordingSinkConcurrentRecordingAndRead` runs many goroutines under the race detector against the test-only `RecordingSink`.
 
 ## Context
 
