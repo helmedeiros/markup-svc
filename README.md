@@ -46,9 +46,17 @@ Hexagonal. `internal/markup.Decider` is the one-method port through which every 
 |---|---|
 | `internal/markup` | domain port: `Request`, `Decision`, `Decider`, `ErrNoMatch`, `FactOf` |
 | `internal/load` | CSV rule loader; produces `[]load.Rule` with pre-compiled bre-go `parser.Condition` |
-| `internal/decider/inmemory` | first `Decider` adapter, wraps `bre-go/engine/inmemory.Engine` |
-| `internal/httpapi` | HTTP transport: `Decide` handler + `WithCorrelationID` middleware |
+| `internal/decider/inmemory` | `Decider` adapter wrapping `bre-go/engine/inmemory.Engine` (last-action-wins) |
+| `internal/decider/firstmatch` | `Decider` adapter wrapping `bre-go/engine/firstmatch.Engine` (insertion-order first match) |
+| `internal/decider/priority` | `Decider` adapter wrapping `bre-go/engine/priority.Engine` (highest-priority match, ties by insertion order) |
+| `internal/decider/indexed` | `Decider` adapter wrapping `bre-go/engine/indexed.Engine` (sub-linear bucket lookup; same semantic as firstmatch) |
+| `internal/httpapi` | HTTP transport: `Decide` handler + `WithCorrelationID` middleware + `Reload` admin handler |
+| `internal/decider/swap` | atomic holder around `markup.Decider`; powers hot reload |
+| `internal/snapshot` | JSON snapshot format wrapping bre-go's indexed `Snapshot` + per-rule factors |
+| `internal/observability/otel` | OpenTelemetry span decorator at the `markup.Decider` port |
+| `internal/observability/metrics` | metrics port (`DecisionMetric` + `Sink`) + decorator at the `markup.Decider` port |
 | `cmd/markup-server` | application: flag parsing + lifecycle |
+| `cmd/snapshot-build` | offline CSV → snapshot JSON tool |
 
 ## Rule format
 

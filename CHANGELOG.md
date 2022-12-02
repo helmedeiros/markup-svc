@@ -7,11 +7,17 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.0.4] - 2022-12-02
+
+Observability lands. The Decider port gains two stackable decorators — one for OpenTelemetry spans, one for typed metric events. Both classify outcomes the same way so dashboards can pair span attributes with metric counters without divergence.
+
 ### Added
 
 - `internal/observability/otel`: markup-domain OpenTelemetry decorator at the `markup.Decider` port. `Wrap(inner, tracer, opts...)` emits one span per `Decide` with `rule.markup.*` attributes (`adapter`, `model_version`, `rule`, `factor`, `correlation_id`). `ErrNoMatch` lands as `rule.markup.no_match=true` with span status OK (a domain outcome, not an error). `context.Canceled` and `context.DeadlineExceeded` use `rule.markup.canceled` / `rule.markup.cancel.reason`, again without `codes.Error`, so caller-driven cancellation does not inflate server-side error-rate dashboards. Other errors get `codes.Error` + `RecordError`. `WithSpanName` option overrides the default name `markup.decider.decide`.
 - `cmd/markup-server` `--otel-enabled` flag (default off). When set, `wireTracedHandler` composes `otel.Wrap` *outside* the `swap.Decider` holder so spans continue to be emitted across hot reloads (`TestE2EOTelSpansContinueAfterReload` pins this composition). The reload route keeps calling `holder.Swap` directly.
+- `internal/observability/metrics`: markup-side metrics port. `DecisionMetric` value type (`Adapter`, `ModelVersion`, `Rule`, `MarkupFactor`, `CorrelationID`, `Duration`, plus `NoMatch` / `Err` / `Canceled` / `CancelReason` mutually-exclusive outcome flags), single-method `Sink` interface, and `Wrap(markup.Decider, Sink)` decorator that emits one event per `Decide`. Symmetric to the OTel decorator's outcome classification so the two stack cleanly: recommended order is `metrics.Wrap(otel.Wrap(swap.New(inner)))` so the metric `Duration` captures end-to-end Decider cost. `RecordingSink` ships as the test-only aggregator; production sinks (Prometheus, OTel metrics) are operator-supplied. `TestComposesWithOTelDecorator` proves both decorators stack without interference; `TestDecisionMetricFieldSetInvariants` pins the field-set mutual-exclusivity rules across every outcome.
 - ADR-0009 (Accepted): OpenTelemetry spans at the Decider port.
+- ADR-0010 (Accepted): metrics port at the Decider layer.
 - Dependency: `go.opentelemetry.io/otel v1.11.2` plus `otel/trace` and `otel/sdk` (test-only). Pinned to bre-go's OTel version so transitive deps dedupe.
 
 ## [0.0.3] - 2022-11-18
@@ -63,7 +69,8 @@ First usable build: `POST /decide` against a CSV-loaded inmemory `Decider`, with
 - README.md with quickstart, architecture table, HTTP contract table, ADR links, and CI + coverage badges.
 - Project `.gitignore` (excludes `*.local.md`).
 
-[Unreleased]: https://github.com/helmedeiros/markup-svc/compare/v0.0.3...HEAD
+[Unreleased]: https://github.com/helmedeiros/markup-svc/compare/v0.0.4...HEAD
+[0.0.4]: https://github.com/helmedeiros/markup-svc/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/helmedeiros/markup-svc/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/helmedeiros/markup-svc/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/helmedeiros/markup-svc/releases/tag/v0.0.1
