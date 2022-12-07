@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — proposes `internal/decider/router` as a `markup.Decider` decorator that holds N inner Deciders keyed by `(ModelVersion, Variant)` and selects which one serves each `Decide` call via a pluggable `Policy`. The router stamps `Decision.ModelVersion` and `Decision.Experiment` from the chosen route so observability slices by `(adapter, model, experiment)` get the right values, regardless of what the inner Decider returns.
+Accepted — `internal/decider/router` ships in the same release window. `TestRouterStampsModelVersionAndVariant` pins the source-of-truth contract end-to-end: a stub Decider that writes "wrong" to its own `Decision.ModelVersion` and `Decision.Experiment` is silently overridden by the Router's stamp. `TestHashCorrelationPolicyDistributionRoughlyEven` confirms two variants split traffic in the 40-60% band over 10,000 hashed IDs (well within the stickiness contract's "approximately even" promise). `TestRouterStacksWithMetricsAndOtel` proves the composition promise: a Router wrapped by `otel.Wrap` and `metrics.Wrap` produces both signals with the routing labels surfacing on both.
 
 ## Context
 
@@ -105,7 +105,7 @@ var ErrNoRoute = errors.New("router: no route matched the request")
 
 `Decision.Experiment` becomes the canonical "which variant served this" field; `Decision.ModelVersion` the canonical "which model served this" field. Both are stamped by the router post-Decide, so inner Deciders cannot accidentally erase the routing decision.
 
-cmd/markup-server wiring (W10 Fri commit, not this ADR):
+cmd/markup-server wiring (follow-up commit, not this ADR):
 
 ```sh
 markup-server --route=v1:rules:rules-v1.csv --route=v2:rules:rules-v2.csv --policy=hash-correlation
@@ -124,8 +124,8 @@ Each `--route` adds a `Route{ModelVersion, Variant}` and points at a CSV or snap
 
 ### NOT closed by this ADR
 
-- Per-route hot reload. The router holds inner Deciders; if each inner is itself a `swap.Decider` then per-route reload is supported, but the cmd wiring (which routes get their own holder, which share one) is a separate decision tracked under the W11 work.
-- Traffic-shifting controls (move 50%→75% of traffic to variant B). The W10 policies are static once the server boots; runtime shifting needs a new policy that consults a knob (file watch, admin endpoint).
+- Per-route hot reload. The router holds inner Deciders; if each inner is itself a `swap.Decider` then per-route reload is supported, but the cmd wiring (which routes get their own holder, which share one) is a separate decision tracked separately.
+- Traffic-shifting controls (move 50%→75% of traffic to variant B). The policies in this ADR are static once the server boots; runtime shifting needs a new policy that consults a knob (file watch, admin endpoint).
 - Multi-tenancy routing. The router can route by `Request` fields the tenant lives on, but the marshaling of tenant identity into the request is out of scope.
 - Experiment definition language. Operators describe variants via cmd flags today; a richer DSL is its own ADR.
 - Policy ABAC (consult an external service to decide the variant). Out of scope; deployments that need it write a custom `Policy`.
@@ -147,4 +147,4 @@ The router does NOT serialize the inner `Decide` calls — different goroutines 
 - `internal/decider/router`: unit tests covering the load-bearing properties — `TestRouterStampsModelVersionAndVariant` confirms the routing decision overrides whatever the inner Decider writes; `TestRouterPropagatesInnerErrNoMatch` confirms domain misses propagate unchanged; `TestRouterErrNoRouteOnPolicyFailure` confirms the routing error is distinct from `ErrNoMatch`.
 - `HashCorrelationPolicy`: `TestStickyAcrossCallsWithSameCorrelationID` confirms same correlation → same variant across N calls; `TestVariantsApproximatelyEvenAcrossManyIDs` confirms two variants split traffic roughly 50/50 over 10,000 hashed IDs.
 - Composition: `TestRouterStacksWithMetricsAndOtel` runs `metrics.Wrap(otel.Wrap(router.New([routes], policy)))` and confirms both a metric event AND a span are recorded with the route's ModelVersion + Variant on both signals.
-- `cmd/markup-server` integration test (W10 Fri): `--route=v1:rules:rules-a.csv --route=v2:rules:rules-b.csv --policy=hash-correlation` and POST `/decide` with two different correlation IDs returns Decisions stamped with different `model_version` and `experiment` fields. The asymmetry is the proof — without the router, the same Request would yield the same model and same variant.
+- `cmd/markup-server` integration test (follow-up commit): `--route=v1:rules:rules-a.csv --route=v2:rules:rules-b.csv --policy=hash-correlation` and POST `/decide` with two different correlation IDs returns Decisions stamped with different `model_version` and `experiment` fields. The asymmetry is the proof — without the router, the same Request would yield the same model and same variant.
