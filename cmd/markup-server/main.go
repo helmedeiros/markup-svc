@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/helmedeiros/markup-svc/internal/decider/indexed"
 	"github.com/helmedeiros/markup-svc/internal/decider/inmemory"
 	"github.com/helmedeiros/markup-svc/internal/decider/priority"
+	"github.com/helmedeiros/markup-svc/internal/decider/router"
 	"github.com/helmedeiros/markup-svc/internal/decider/swap"
 	"github.com/helmedeiros/markup-svc/internal/httpapi"
 	"github.com/helmedeiros/markup-svc/internal/load"
@@ -54,42 +56,69 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	modelVersion := fs.String("model", "v1", "model version tag carried on every Decision (overridden by snapshot's ModelVersion when --snapshot is set)")
 	adapter := fs.String("adapter", "inmemory", "Decider adapter: inmemory|firstmatch|priority|indexed (ignored when --snapshot is set; snapshots are indexed-only)")
 	otelEnabled := fs.Bool("otel-enabled", false, "wrap Decide calls in OpenTelemetry spans (see ADR-0009); spans emit via the no-op tracer unless an exporter is configured via OTel SDK env vars")
+	var routeSpecs routeFlagList
+	fs.Var(&routeSpecs, "route", "repeatable; format: model:variant:type:path where type is rules|snapshot. When set, mutually exclusive with --rules/--snapshot. See ADR-0011.")
+	policyName := fs.String("policy", "hash-correlation", "routing policy when multiple --route flags are set: hash-correlation|default")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	if *rulesPath != "" && *snapshotPath != "" {
+	routerMode := len(routeSpecs) > 0
+	if routerMode && (*rulesPath != "" || *snapshotPath != "") {
+		return fmt.Errorf("--route is mutually exclusive with --rules/--snapshot")
+	}
+	if !routerMode && *rulesPath != "" && *snapshotPath != "" {
 		return fmt.Errorf("--rules and --snapshot are mutually exclusive")
 	}
-	if *rulesPath == "" && *snapshotPath == "" {
-		return fmt.Errorf("one of --rules or --snapshot is required")
-	}
-
-	var (
-		loader      httpapi.Loader
-		bootSource  string
-		bootAdapter string
-	)
-	if *snapshotPath != "" {
-		loader = snapshotLoader(*snapshotPath, stderr)
-		bootSource = *snapshotPath
-		bootAdapter = "indexed"
-	} else {
-		loader = rulesLoader(*rulesPath, *adapter, *modelVersion, stderr)
-		bootSource = *rulesPath
-		bootAdapter = *adapter
+	if !routerMode && *rulesPath == "" && *snapshotPath == "" {
+		return fmt.Errorf("one of --rules, --snapshot, or --route is required")
 	}
 
 	var tracer trace.Tracer
 	if *otelEnabled {
 		tracer = otel.Tracer("github.com/helmedeiros/markup-svc/cmd/markup-server")
 	}
-	handler, initialResult, err := wireTracedHandler(loader, tracer)
-	if err != nil {
-		return err
+
+	var (
+		handler     http.Handler
+		ruleCount   int
+		bootSource  string
+		bootAdapter string
+		bootModel   = *modelVersion
+	)
+	if routerMode {
+		policy, perr := pickRouterPolicy(*policyName)
+		if perr != nil {
+			return perr
+		}
+		routes, total, perr := buildRoutes(routeSpecs, stderr)
+		if perr != nil {
+			return perr
+		}
+		handler = wireRouterHandler(router.New(routes, policy), tracer)
+		ruleCount = total
+		bootSource = fmt.Sprintf("%d routes (policy=%s)", len(routes), *policyName)
+		bootAdapter = "router"
+		bootModel = fmt.Sprintf("multi(%d)", len(routes))
+	} else {
+		var loader httpapi.Loader
+		if *snapshotPath != "" {
+			loader = snapshotLoader(*snapshotPath, stderr)
+			bootSource = *snapshotPath
+			bootAdapter = "indexed"
+		} else {
+			loader = rulesLoader(*rulesPath, *adapter, *modelVersion, stderr)
+			bootSource = *rulesPath
+			bootAdapter = *adapter
+		}
+		h, initialResult, err := wireTracedHandler(loader, tracer)
+		if err != nil {
+			return err
+		}
+		handler = h
+		ruleCount = initialResult.RuleCount
+		bootModel = initialResult.ModelVersion
 	}
-	ruleCount := initialResult.RuleCount
-	bootModel := initialResult.ModelVersion
 	srv := &http.Server{
 		Addr:              *listen,
 		Handler:           handler,
@@ -140,6 +169,91 @@ func loadRulesFromFile(path string) ([]load.Rule, error) {
 // by tests so they exercise the real seam.
 func wireHandler(loader httpapi.Loader) (http.Handler, httpapi.ReloadResult, error) {
 	return wireTracedHandler(loader, nil)
+}
+
+// routeFlagList accumulates repeated --route flag values into a slice
+// so cmd/markup-server can specify multi-route deployments at boot.
+type routeFlagList []string
+
+// String implements flag.Value.
+func (r *routeFlagList) String() string { return strings.Join(*r, ",") }
+
+// Set implements flag.Value -- appends each --route occurrence.
+func (r *routeFlagList) Set(v string) error {
+	*r = append(*r, v)
+	return nil
+}
+
+// wireRouterHandler mounts /decide on a Router behind the optional
+// OTel decorator and the correlation-ID middleware. Router mode does
+// not mount /admin/reload because per-route reload is a separate
+// design (each route would need its own swap.Decider holder and a
+// reload contract that names which route to refresh). Operators
+// running multi-route deployments today restart the process to swap
+// rule sets; per-route hot reload lands in a follow-up.
+func wireRouterHandler(r *router.Router, tracer trace.Tracer) http.Handler {
+	var decideDecider markup.Decider = r
+	if tracer != nil {
+		decideDecider = mkotel.Wrap(r, tracer)
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/decide", httpapi.Decide(decideDecider))
+	return httpapi.WithCorrelationID(mux)
+}
+
+// pickRouterPolicy maps the --policy flag name to a router.Policy.
+// Unknown names fail boot fast (mirrors the --adapter flag posture).
+func pickRouterPolicy(name string) (router.Policy, error) {
+	switch name {
+	case "hash-correlation":
+		return router.HashCorrelationPolicy{}, nil
+	case "default":
+		return router.DefaultPolicy{}, nil
+	default:
+		return nil, fmt.Errorf("unknown --policy %q (want one of: hash-correlation, default)", name)
+	}
+}
+
+// buildRoutes parses every --route flag value and builds the
+// corresponding router.Route. Returns the total rule count across
+// all routes so the startup log line accurately reflects the boot
+// inventory.
+func buildRoutes(specs routeFlagList, stderr io.Writer) ([]router.Route, int, error) {
+	out := make([]router.Route, 0, len(specs))
+	totalRules := 0
+	for _, raw := range specs {
+		parts := strings.SplitN(raw, ":", 4)
+		if len(parts) != 4 {
+			return nil, 0, fmt.Errorf("invalid --route %q (want model:variant:type:path)", raw)
+		}
+		model, variant, srcType, srcPath := parts[0], parts[1], parts[2], parts[3]
+		if model == "" {
+			return nil, 0, fmt.Errorf("--route %q: model field is required", raw)
+		}
+		if srcPath == "" {
+			return nil, 0, fmt.Errorf("--route %q: path field is required", raw)
+		}
+		var loader httpapi.Loader
+		switch srcType {
+		case "rules":
+			loader = rulesLoader(srcPath, "inmemory", model, stderr)
+		case "snapshot":
+			loader = snapshotLoader(srcPath, stderr)
+		default:
+			return nil, 0, fmt.Errorf("--route %q: type must be rules|snapshot, got %q", raw, srcType)
+		}
+		decider, result, err := loader()
+		if err != nil {
+			return nil, 0, fmt.Errorf("--route %q: %w", raw, err)
+		}
+		out = append(out, router.Route{
+			ModelVersion: model,
+			Variant:      variant,
+			Decider:      decider,
+		})
+		totalRules += result.RuleCount
+	}
+	return out, totalRules, nil
 }
 
 // wireTracedHandler is wireHandler with an optional OpenTelemetry

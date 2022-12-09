@@ -7,6 +7,12 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- `internal/decider/router`: routing decorator at the `markup.Decider` port. `Route{ModelVersion, Variant, Decider}` + `Policy` interface + `Router` with `Decide` that picks a Route via the policy, dispatches to the inner Decider, and stamps `Decision.ModelVersion` + `Decision.Experiment` from the chosen Route post-Decide (the router is the source of truth for routing labels). Ships `HashCorrelationPolicy` (sticky-by-correlation-ID, FNV-1a hash inline so the policy path is allocation-free), `HashFieldPolicy` (sticky-by-Request-field via a closure), and `DefaultPolicy` (always first route). Routing failures surface as `ErrNoRoute`, distinct from `markup.ErrNoMatch` because the observability semantics differ (server-side problem vs domain miss).
+- `cmd/markup-server` `--route` repeatable flag (`model:variant:type:path`, `type` is `rules|snapshot`) plus `--policy={hash-correlation|default}`. Router mode is mutually exclusive with `--rules`/`--snapshot`; `/admin/reload` is not mounted in router mode (per-route reload is a follow-up). `TestE2ERouterAsymmetryOverHTTP` proves two distinct correlation IDs land on different routes with different stamped `model_version`/`experiment`/`markup_factor` over the wire — without the router both IDs would hit the same engine.
+- ADR-0011 (Accepted): router decorator for A/B variants and multi-model routing.
+
 ## [0.0.4] - 2022-12-02
 
 Observability lands. The Decider port gains two stackable decorators — one for OpenTelemetry spans, one for typed metric events. Both classify outcomes the same way so dashboards can pair span attributes with metric counters without divergence.
