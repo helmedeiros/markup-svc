@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -91,11 +92,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if perr != nil {
 			return perr
 		}
-		routes, total, perr := buildRoutes(routeSpecs, stderr)
+		routes, holders, total, perr := buildRoutes(routeSpecs, stderr)
 		if perr != nil {
 			return perr
 		}
-		handler = wireRouterHandler(router.New(routes, policy), tracer)
+		handler = wireRouterHandler(router.New(routes, policy), tracer, holders)
 		ruleCount = total
 		bootSource = fmt.Sprintf("%d routes (policy=%s)", len(routes), *policyName)
 		bootAdapter = "router"
@@ -185,20 +186,88 @@ func (r *routeFlagList) Set(v string) error {
 }
 
 // wireRouterHandler mounts /decide on a Router behind the optional
-// OTel decorator and the correlation-ID middleware. Router mode does
-// not mount /admin/reload because per-route reload is a separate
-// design (each route would need its own swap.Decider holder and a
-// reload contract that names which route to refresh). Operators
-// running multi-route deployments today restart the process to swap
-// rule sets; per-route hot reload lands in a follow-up.
-func wireRouterHandler(r *router.Router, tracer trace.Tracer) http.Handler {
+// OTel decorator and the correlation-ID middleware. When holders is
+// non-empty, /admin/reload is also mounted as a route-aware handler:
+// POST /admin/reload with body {"model_version":"v1"} reloads the
+// named route's inner Decider through its dedicated swap.Decider
+// holder. When holders is nil (legacy callers that did not build
+// per-route reload infrastructure), /admin/reload is not mounted
+// and POSTs return 404. See ADR-0011's follow-up commit.
+func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHolder) http.Handler {
 	var decideDecider markup.Decider = r
 	if tracer != nil {
 		decideDecider = mkotel.Wrap(r, tracer)
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/decide", httpapi.Decide(decideDecider))
+	if len(holders) > 0 {
+		mux.Handle("/admin/reload", routeReloadHandler(holders))
+	}
 	return httpapi.WithCorrelationID(mux)
+}
+
+// routeHolder bundles a route's ModelVersion with its swap.Decider
+// holder and the loader closure that rebuilds the route from disk.
+// The Router holds the swap.Decider as the Route's Decider; reload
+// swaps the inner without touching the Router or the swap reference.
+type routeHolder struct {
+	modelVersion string
+	holder       *swap.Decider
+	loader       httpapi.Loader
+}
+
+// routeReloadHandler implements the route-aware admin endpoint. POST
+// {"model_version":"v1"} runs the v1 loader and swaps the v1 holder.
+// 400 on malformed body, 404 on unknown model_version, 500 on loader
+// failure (in which case the old Decider keeps serving), 405 on
+// non-POST with Allow: POST. Mirrors httpapi.Reload's error posture
+// but parameterized by route name so a single endpoint serves every
+// route in the deployment.
+func routeReloadHandler(holders []routeHolder) http.Handler {
+	byName := make(map[string]routeHolder, len(holders))
+	for _, h := range holders {
+		byName[h.modelVersion] = h
+	}
+	type req struct {
+		ModelVersion string `json:"model_version"`
+	}
+	type resp struct {
+		RuleCount    int    `json:"rule_count"`
+		ModelVersion string `json:"model_version"`
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
+			return
+		}
+		var body req
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ModelVersion == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "body must be JSON {\"model_version\":\"...\"}"})
+			return
+		}
+		route, ok := byName[body.ModelVersion]
+		if !ok {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "unknown model_version"})
+			return
+		}
+		next, result, err := route.loader()
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "reload failed"})
+			return
+		}
+		route.holder.Swap(next)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp{RuleCount: result.RuleCount, ModelVersion: result.ModelVersion})
+	})
 }
 
 // pickRouterPolicy maps the --policy flag name to a router.Policy.
@@ -215,23 +284,26 @@ func pickRouterPolicy(name string) (router.Policy, error) {
 }
 
 // buildRoutes parses every --route flag value and builds the
-// corresponding router.Route. Returns the total rule count across
-// all routes so the startup log line accurately reflects the boot
-// inventory.
-func buildRoutes(specs routeFlagList, stderr io.Writer) ([]router.Route, int, error) {
-	out := make([]router.Route, 0, len(specs))
+// corresponding router.Route. Each Route's Decider is wrapped in its
+// own swap.Decider holder so the route-aware reload handler can swap
+// the inner without disrupting in-flight requests on other routes.
+// Returns the routes (with holders as their inner), the per-route
+// loaders+holders for /admin/reload wiring, and the total rule count.
+func buildRoutes(specs routeFlagList, stderr io.Writer) ([]router.Route, []routeHolder, int, error) {
+	routes := make([]router.Route, 0, len(specs))
+	holders := make([]routeHolder, 0, len(specs))
 	totalRules := 0
 	for _, raw := range specs {
 		parts := strings.SplitN(raw, ":", 4)
 		if len(parts) != 4 {
-			return nil, 0, fmt.Errorf("invalid --route %q (want model:variant:type:path)", raw)
+			return nil, nil, 0, fmt.Errorf("invalid --route %q (want model:variant:type:path)", raw)
 		}
 		model, variant, srcType, srcPath := parts[0], parts[1], parts[2], parts[3]
 		if model == "" {
-			return nil, 0, fmt.Errorf("--route %q: model field is required", raw)
+			return nil, nil, 0, fmt.Errorf("--route %q: model field is required", raw)
 		}
 		if srcPath == "" {
-			return nil, 0, fmt.Errorf("--route %q: path field is required", raw)
+			return nil, nil, 0, fmt.Errorf("--route %q: path field is required", raw)
 		}
 		var loader httpapi.Loader
 		switch srcType {
@@ -240,20 +312,22 @@ func buildRoutes(specs routeFlagList, stderr io.Writer) ([]router.Route, int, er
 		case "snapshot":
 			loader = snapshotLoader(srcPath, stderr)
 		default:
-			return nil, 0, fmt.Errorf("--route %q: type must be rules|snapshot, got %q", raw, srcType)
+			return nil, nil, 0, fmt.Errorf("--route %q: type must be rules|snapshot, got %q", raw, srcType)
 		}
 		decider, result, err := loader()
 		if err != nil {
-			return nil, 0, fmt.Errorf("--route %q: %w", raw, err)
+			return nil, nil, 0, fmt.Errorf("--route %q: %w", raw, err)
 		}
-		out = append(out, router.Route{
+		holder := swap.New(decider)
+		routes = append(routes, router.Route{
 			ModelVersion: model,
 			Variant:      variant,
-			Decider:      decider,
+			Decider:      holder,
 		})
+		holders = append(holders, routeHolder{modelVersion: model, holder: holder, loader: loader})
 		totalRules += result.RuleCount
 	}
-	return out, totalRules, nil
+	return routes, holders, totalRules, nil
 }
 
 // wireTracedHandler is wireHandler with an optional OpenTelemetry

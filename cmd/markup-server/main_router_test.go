@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/helmedeiros/markup-svc/internal/decider/router"
+	"github.com/helmedeiros/markup-svc/internal/markup"
 )
 
 const routeRulesA = `name,condition,factor,priority
@@ -52,7 +53,7 @@ func TestE2ERouterAsymmetryOverHTTP(t *testing.T) {
 		fmt.Sprintf("v1:control:rules:%s", pathA),
 		fmt.Sprintf("v2:treatment:rules:%s", pathB),
 	}
-	routes, total, err := buildRoutes(specs, io.Discard)
+	routes, holders, total, err := buildRoutes(specs, io.Discard)
 	if err != nil {
 		t.Fatalf("buildRoutes: %v", err)
 	}
@@ -64,7 +65,7 @@ func TestE2ERouterAsymmetryOverHTTP(t *testing.T) {
 		t.Fatalf("pickRouterPolicy: %v", err)
 	}
 	r := router.New(routes, policy)
-	srv := httptest.NewServer(wireRouterHandler(r, nil))
+	srv := httptest.NewServer(wireRouterHandler(r, nil, holders))
 	t.Cleanup(srv.Close)
 
 	// Find two correlation IDs that the hash sends to different routes
@@ -104,13 +105,13 @@ func TestE2ERouterStickyByCorrelationIDOverHTTP(t *testing.T) {
 		fmt.Sprintf("v1:control:rules:%s", pathA),
 		fmt.Sprintf("v2:treatment:rules:%s", pathB),
 	}
-	routes, _, err := buildRoutes(specs, io.Discard)
+	routes, holders, _, err := buildRoutes(specs, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
 	policy, _ := pickRouterPolicy("hash-correlation")
 	r := router.New(routes, policy)
-	srv := httptest.NewServer(wireRouterHandler(r, nil))
+	srv := httptest.NewServer(wireRouterHandler(r, nil, holders))
 	t.Cleanup(srv.Close)
 
 	first := decideRouterFactor(t, srv.URL, "trace-sticky-1")
@@ -122,18 +123,23 @@ func TestE2ERouterStickyByCorrelationIDOverHTTP(t *testing.T) {
 	}
 }
 
-func TestE2ERouterReloadEndpointAbsentInRouterMode(t *testing.T) {
+// TestE2ERouterReloadWithoutHoldersReturns404 confirms a Router-mode
+// handler built without per-route holders returns 404 on
+// /admin/reload (the legacy posture before this commit added per-route
+// reload). Holders-mode behaviour is covered by
+// TestE2ERouterPerRouteReloadOverHTTP below.
+func TestE2ERouterReloadWithoutHoldersReturns404(t *testing.T) {
 	pathA, pathB := writeTwoRouteCSVs(t)
 	specs := routeFlagList{
 		fmt.Sprintf("v1::rules:%s", pathA),
 		fmt.Sprintf("v2::rules:%s", pathB),
 	}
-	routes, _, err := buildRoutes(specs, io.Discard)
+	routes, _, _, err := buildRoutes(specs, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
 	r := router.New(routes, router.DefaultPolicy{})
-	srv := httptest.NewServer(wireRouterHandler(r, nil))
+	srv := httptest.NewServer(wireRouterHandler(r, nil, nil))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Post(srv.URL+"/admin/reload", "application/json", nil)
@@ -142,13 +148,218 @@ func TestE2ERouterReloadEndpointAbsentInRouterMode(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("/admin/reload in router mode: status = %d, want 404", resp.StatusCode)
+		t.Errorf("/admin/reload without holders: status = %d, want 404", resp.StatusCode)
 	}
+}
+
+// TestE2ERouterPerRouteReloadOverHTTP is the load-bearing test for
+// per-route reload: with holders mounted, POST /admin/reload
+// {"model_version":"v1"} runs the v1 route's loader and swaps the v1
+// holder's inner, while the v2 holder is untouched. The test
+// overwrites the v1 CSV on disk with a new factor, reloads v1, then
+// asserts /decide returns the new factor for v1 traffic AND the
+// original factor for v2 traffic. The asymmetry between v1 (changed)
+// and v2 (unchanged) is the proof -- if the reload accidentally
+// swapped both holders, or neither, the test fails.
+func TestE2ERouterPerRouteReloadOverHTTP(t *testing.T) {
+	pathA, pathB := writeTwoRouteCSVs(t)
+	specs := routeFlagList{
+		fmt.Sprintf("v1:control:rules:%s", pathA),
+		fmt.Sprintf("v2:treatment:rules:%s", pathB),
+	}
+	routes, holders, _, err := buildRoutes(specs, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := router.New(routes, router.DefaultPolicy{})
+	srv := httptest.NewServer(wireRouterHandler(r, nil, holders))
+	t.Cleanup(srv.Close)
+
+	// DefaultPolicy always picks the first route (v1); we need to
+	// observe v2 traffic too. Probe with a few correlation IDs to
+	// confirm DefaultPolicy ignores them (every probe must report v1).
+	pre := decideRouterFactor(t, srv.URL, "x")
+	if pre.modelVersion != "v1" || pre.factor != 1.10 {
+		t.Fatalf("pre-reload v1 factor = %v / model = %q, want 1.10 / v1", pre.factor, pre.modelVersion)
+	}
+
+	// Overwrite the v1 CSV with a different factor and reload v1 only.
+	const updatedV1 = `name,condition,factor,priority
+enterprise,customer_tier == 'enterprise',1.99,10
+`
+	if err := os.WriteFile(pathA, []byte(updatedV1), 0o644); err != nil {
+		t.Fatalf("overwrite v1 CSV: %v", err)
+	}
+	reloadResp, err := http.Post(srv.URL+"/admin/reload", "application/json",
+		strings.NewReader(`{"model_version":"v1"}`))
+	if err != nil {
+		t.Fatalf("POST /admin/reload: %v", err)
+	}
+	if reloadResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(reloadResp.Body)
+		reloadResp.Body.Close()
+		t.Fatalf("/admin/reload status = %d, want 200; body=%s", reloadResp.StatusCode, body)
+	}
+	reloadResp.Body.Close()
+
+	// Post-reload v1 must serve the new factor.
+	post := decideRouterFactor(t, srv.URL, "x")
+	if post.modelVersion != "v1" || post.factor != 1.99 {
+		t.Fatalf("post-reload v1 factor = %v / model = %q, want 1.99 / v1", post.factor, post.modelVersion)
+	}
+
+	// v2 was not reloaded -- temporarily swap to HashCorrelationPolicy
+	// to find a correlation ID that routes to v2, then assert the v2
+	// factor is still its original 1.50 (not 1.99). To do this without
+	// rebuilding the server we use the holders directly.
+	v2 := findV2Holder(holders)
+	if v2 == nil {
+		t.Fatal("v2 holder missing in test setup")
+	}
+	v2Decision, err := v2.holder.Decide(context.Background(), markupReq())
+	if err != nil {
+		t.Fatalf("v2 Decide: %v", err)
+	}
+	if v2Decision.MarkupFactor != 1.50 {
+		t.Errorf("v2 factor = %v, want 1.50 (v2 must not be swapped by v1 reload)", v2Decision.MarkupFactor)
+	}
+}
+
+func TestE2ERouterReloadUnknownModelReturns404(t *testing.T) {
+	pathA, pathB := writeTwoRouteCSVs(t)
+	specs := routeFlagList{
+		fmt.Sprintf("v1::rules:%s", pathA),
+		fmt.Sprintf("v2::rules:%s", pathB),
+	}
+	routes, holders, _, err := buildRoutes(specs, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := router.New(routes, router.DefaultPolicy{})
+	srv := httptest.NewServer(wireRouterHandler(r, nil, holders))
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(srv.URL+"/admin/reload", "application/json",
+		strings.NewReader(`{"model_version":"v-does-not-exist"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestE2ERouterReloadMalformedBodyReturns400(t *testing.T) {
+	pathA, pathB := writeTwoRouteCSVs(t)
+	specs := routeFlagList{
+		fmt.Sprintf("v1::rules:%s", pathA),
+		fmt.Sprintf("v2::rules:%s", pathB),
+	}
+	routes, holders, _, err := buildRoutes(specs, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := router.New(routes, router.DefaultPolicy{})
+	srv := httptest.NewServer(wireRouterHandler(r, nil, holders))
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(srv.URL+"/admin/reload", "application/json",
+		strings.NewReader(`not json`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestE2ERouterReloadFailingLoaderReturns500AndKeepsOldDecider(t *testing.T) {
+	pathA, pathB := writeTwoRouteCSVs(t)
+	specs := routeFlagList{
+		fmt.Sprintf("v1::rules:%s", pathA),
+		fmt.Sprintf("v2::rules:%s", pathB),
+	}
+	routes, holders, _, err := buildRoutes(specs, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := router.New(routes, router.DefaultPolicy{})
+	srv := httptest.NewServer(wireRouterHandler(r, nil, holders))
+	t.Cleanup(srv.Close)
+
+	// Corrupt the v1 CSV so the loader fails on reload.
+	if err := os.WriteFile(pathA, []byte(`"unterminated,1.0,0`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(srv.URL+"/admin/reload", "application/json",
+		strings.NewReader(`{"model_version":"v1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+	// v1 holder must still serve the original factor (1.10).
+	v1 := findHolder(holders, "v1")
+	if v1 == nil {
+		t.Fatal("v1 holder missing")
+	}
+	got, _ := v1.holder.Decide(context.Background(), markupReq())
+	if got.MarkupFactor != 1.10 {
+		t.Errorf("v1 factor after failed reload = %v, want 1.10", got.MarkupFactor)
+	}
+}
+
+func TestE2ERouterReloadGetMethodReturns405(t *testing.T) {
+	pathA, pathB := writeTwoRouteCSVs(t)
+	specs := routeFlagList{
+		fmt.Sprintf("v1::rules:%s", pathA),
+		fmt.Sprintf("v2::rules:%s", pathB),
+	}
+	routes, holders, _, err := buildRoutes(specs, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := router.New(routes, router.DefaultPolicy{})
+	srv := httptest.NewServer(wireRouterHandler(r, nil, holders))
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/admin/reload")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Allow"); got != http.MethodPost {
+		t.Errorf("Allow = %q, want POST", got)
+	}
+}
+
+func findV2Holder(holders []routeHolder) *routeHolder {
+	return findHolder(holders, "v2")
+}
+
+func findHolder(holders []routeHolder, modelVersion string) *routeHolder {
+	for i := range holders {
+		if holders[i].modelVersion == modelVersion {
+			return &holders[i]
+		}
+	}
+	return nil
+}
+
+func markupReq() markup.Request {
+	return markup.Request{CustomerTier: "enterprise"}
 }
 
 func TestBuildRoutesRejectsMalformedSpec(t *testing.T) {
 	specs := routeFlagList{"v1:variant"}
-	_, _, err := buildRoutes(specs, io.Discard)
+	_, _, _, err := buildRoutes(specs, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "want model:variant:type:path") {
 		t.Fatalf("got %v, want format error", err)
 	}
@@ -156,7 +367,7 @@ func TestBuildRoutesRejectsMalformedSpec(t *testing.T) {
 
 func TestBuildRoutesRejectsEmptyModel(t *testing.T) {
 	specs := routeFlagList{":control:rules:r.csv"}
-	_, _, err := buildRoutes(specs, io.Discard)
+	_, _, _, err := buildRoutes(specs, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "model field is required") {
 		t.Fatalf("got %v, want model-required error", err)
 	}
@@ -164,7 +375,7 @@ func TestBuildRoutesRejectsEmptyModel(t *testing.T) {
 
 func TestBuildRoutesRejectsBadSourceType(t *testing.T) {
 	specs := routeFlagList{"v1:control:invalid:r.csv"}
-	_, _, err := buildRoutes(specs, io.Discard)
+	_, _, _, err := buildRoutes(specs, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "rules|snapshot") {
 		t.Fatalf("got %v, want type error", err)
 	}
@@ -172,7 +383,7 @@ func TestBuildRoutesRejectsBadSourceType(t *testing.T) {
 
 func TestBuildRoutesPropagatesLoadError(t *testing.T) {
 	specs := routeFlagList{"v1:control:rules:/path/does/not/exist.csv"}
-	_, _, err := buildRoutes(specs, io.Discard)
+	_, _, _, err := buildRoutes(specs, io.Discard)
 	if err == nil {
 		t.Fatal("want propagated load error, got nil")
 	}

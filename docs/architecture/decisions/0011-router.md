@@ -124,7 +124,7 @@ Each `--route` adds a `Route{ModelVersion, Variant}` and points at a CSV or snap
 
 ### NOT closed by this ADR
 
-- Per-route hot reload. The router holds inner Deciders; if each inner is itself a `swap.Decider` then per-route reload is supported, but the cmd wiring (which routes get their own holder, which share one) is a separate decision tracked separately.
+- ~~Per-route hot reload.~~ Delivered in a follow-up commit alongside this ADR: each Route's Decider is wrapped in its own `swap.Decider` holder, and `POST /admin/reload` with body `{"model_version":"..."}` reloads only the named route. `TestE2ERouterPerRouteReloadOverHTTP` pins per-route isolation by overwriting one route's CSV, reloading just that route, and asserting the other route's holder still serves the original factor.
 - Traffic-shifting controls (move 50%→75% of traffic to variant B). The policies in this ADR are static once the server boots; runtime shifting needs a new policy that consults a knob (file watch, admin endpoint).
 - Multi-tenancy routing. The router can route by `Request` fields the tenant lives on, but the marshaling of tenant identity into the request is out of scope.
 - Experiment definition language. Operators describe variants via cmd flags today; a richer DSL is its own ADR.
