@@ -52,6 +52,7 @@ Hexagonal. `internal/markup.Decider` is the one-method port through which every 
 | `internal/decider/indexed` | `Decider` adapter wrapping `bre-go/engine/indexed.Engine` (sub-linear bucket lookup; same semantic as firstmatch) |
 | `internal/httpapi` | HTTP transport: `Decide` handler + `WithCorrelationID` middleware + `Reload` admin handler |
 | `internal/decider/swap` | atomic holder around `markup.Decider`; powers hot reload |
+| `internal/decider/router` | routing decorator with `Route{ModelVersion, Variant, Decider}` + pluggable `Policy`; A/B variants and multi-model deployments |
 | `internal/snapshot` | JSON snapshot format wrapping bre-go's indexed `Snapshot` + per-rule factors |
 | `internal/observability/otel` | OpenTelemetry span decorator at the `markup.Decider` port |
 | `internal/observability/metrics` | metrics port (`DecisionMetric` + `Sink`) + decorator at the `markup.Decider` port |
@@ -86,11 +87,44 @@ See [ADR-0002](docs/architecture/decisions/0002-rule-format-csv.md) for the full
 
 `POST /admin/reload` re-reads the boot-time source (`--rules` CSV or `--snapshot` JSON) from disk, builds a fresh `Decider`, and atomically swaps it into the active holder. In-flight `/decide` calls finish on their captured Decider; new calls land on the swapped one. On success: `200` with `{"rule_count": N, "model_version": "..."}`. On failure (parse error, build error): `500` with an opaque body and the previous Decider keeps serving. See [ADR-0008](docs/architecture/decisions/0008-hot-reload.md).
 
+In multi-route mode (`--route` flag, below), the same endpoint accepts a body `{"model_version": "v1"}` naming which route to refresh; each route's holder is independent, so reloading one does not touch the others.
+
+## Multi-route deployments (A/B + multi-model)
+
+`cmd/markup-server` supports loading multiple rule sets as a single binary, dispatching each request to one of them via a routing policy. Useful for A/B experiments, model-version rollouts, and per-tenant rule sets.
+
+```sh
+./markup-server \
+  --route=v1:control:rules:rules-control.csv \
+  --route=v2:treatment:rules:rules-treatment.csv \
+  --policy=hash-correlation \
+  --listen=:8080
+```
+
+Each `--route` value is `model:variant:type:path` where `type` is `rules` or `snapshot`. `--policy` selects how Requests are dispatched:
+
+| Policy | Behavior |
+|---|---|
+| `hash-correlation` (default) | FNV-1a hash of the `X-Correlation-ID` header → modulo route count. Same correlation ID always lands on the same route. When the header is absent (e.g., health probes), falls back to the first route. |
+| `default` | Always picks the first route. Useful when the router is wired with one route (e.g., placeholder for future multi-route rollouts). |
+
+The active route's `ModelVersion` and `Variant` are stamped onto every Decision's `model_version` and `experiment` fields, regardless of what the inner Decider writes — the router is the source of truth for routing labels. The metrics and OpenTelemetry decorators see the routing labels too, so dashboards can slice by `(adapter, model, experiment)` cleanly.
+
+Per-route hot reload: `POST /admin/reload` with body `{"model_version": "v1"}` reloads only the v1 route's source from disk. See [ADR-0011](docs/architecture/decisions/0011-router.md).
+
 ## Architecture Decision Records
 
 - [ADR-0001](docs/architecture/decisions/0001-domain-port.md) — Domain port: `Decider` interface
 - [ADR-0002](docs/architecture/decisions/0002-rule-format-csv.md) — Rule format: CSV with parser expressions
 - [ADR-0003](docs/architecture/decisions/0003-http-decide-route.md) — HTTP transport: `POST /decide`
+- [ADR-0004](docs/architecture/decisions/0004-firstmatch-adapter.md) — First-match Decider adapter
+- [ADR-0005](docs/architecture/decisions/0005-priority-adapter.md) — Priority Decider adapter
+- [ADR-0006](docs/architecture/decisions/0006-indexed-adapter.md) — Indexed Decider adapter (sub-linear lookup)
+- [ADR-0007](docs/architecture/decisions/0007-snapshot-persistence.md) — Snapshot persistence for the indexed adapter
+- [ADR-0008](docs/architecture/decisions/0008-hot-reload.md) — Hot reload via admin endpoint
+- [ADR-0009](docs/architecture/decisions/0009-otel-spans.md) — OpenTelemetry spans at the Decider port
+- [ADR-0010](docs/architecture/decisions/0010-metrics-port.md) — Metrics port at the Decider layer
+- [ADR-0011](docs/architecture/decisions/0011-router.md) — Router decorator: A/B variants and multi-model routing
 
 ## Quality gates
 
