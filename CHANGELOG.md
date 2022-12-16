@@ -7,11 +7,16 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.0] - 2022-12-16
+
+First minor release. The `v0.0.x` line shipped the engine adapter matrix, observability decorators, snapshot persistence, and hot reload one piece at a time; `v0.1.0` adds the last shape the original premise promised — variant routing and multi-model deployments — and signals the first commitment toward API stability. The exported types in `internal/markup` (Request, Decision, Decider, ErrNoMatch, FactOf), the four adapter packages, the swap holder, both observability decorators, and the router are now considered stable; breaking changes carry a SemVer bump.
+
 ### Added
 
 - `internal/decider/router`: routing decorator at the `markup.Decider` port. `Route{ModelVersion, Variant, Decider}` + `Policy` interface + `Router` with `Decide` that picks a Route via the policy, dispatches to the inner Decider, and stamps `Decision.ModelVersion` + `Decision.Experiment` from the chosen Route post-Decide (the router is the source of truth for routing labels). Ships `HashCorrelationPolicy` (sticky-by-correlation-ID, FNV-1a hash inline so the policy path is allocation-free), `HashFieldPolicy` (sticky-by-Request-field via a closure), and `DefaultPolicy` (always first route). Routing failures surface as `ErrNoRoute`, distinct from `markup.ErrNoMatch` because the observability semantics differ (server-side problem vs domain miss).
-- `cmd/markup-server` `--route` repeatable flag (`model:variant:type:path`, `type` is `rules|snapshot`) plus `--policy={hash-correlation|default}`. Router mode is mutually exclusive with `--rules`/`--snapshot`; `/admin/reload` is not mounted in router mode (per-route reload is a follow-up). `TestE2ERouterAsymmetryOverHTTP` proves two distinct correlation IDs land on different routes with different stamped `model_version`/`experiment`/`markup_factor` over the wire — without the router both IDs would hit the same engine.
-- ADR-0011 (Accepted): router decorator for A/B variants and multi-model routing.
+- `cmd/markup-server` `--route` repeatable flag (`model:variant:type:path`, `type` is `rules|snapshot`) plus `--policy={hash-correlation|default}`. Router mode is mutually exclusive with `--rules`/`--snapshot`. Each route is wrapped in its own `swap.Decider` holder so `POST /admin/reload` with body `{"model_version":"v1"}` reloads only that route — other routes are untouched. `TestE2ERouterAsymmetryOverHTTP` proves two distinct correlation IDs land on different routes with different stamped `model_version`/`experiment`/`markup_factor` over the wire; `TestE2ERouterPerRouteReloadOverHTTP` proves a v1 reload swaps v1's holder while v2's holder still serves its original factor.
+- ADR-0011 (Accepted): router decorator for A/B variants and multi-model routing. The "per-route hot reload" item in NOT-closed was delivered in the same release window.
+- README: Multi-route deployments section with quickstart, `--route` format, `--policy` table including fallback behaviour, and complete ADR list (0001-0011).
 
 ## [0.0.4] - 2022-12-02
 
@@ -75,7 +80,8 @@ First usable build: `POST /decide` against a CSV-loaded inmemory `Decider`, with
 - README.md with quickstart, architecture table, HTTP contract table, ADR links, and CI + coverage badges.
 - Project `.gitignore` (excludes `*.local.md`).
 
-[Unreleased]: https://github.com/helmedeiros/markup-svc/compare/v0.0.4...HEAD
+[Unreleased]: https://github.com/helmedeiros/markup-svc/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/helmedeiros/markup-svc/compare/v0.0.4...v0.1.0
 [0.0.4]: https://github.com/helmedeiros/markup-svc/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/helmedeiros/markup-svc/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/helmedeiros/markup-svc/compare/v0.0.1...v0.0.2
