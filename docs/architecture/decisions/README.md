@@ -30,3 +30,4 @@ NNNN-short-decision-name.md
 | [0009](0009-otel-spans.md) | OpenTelemetry spans at the Decider port | ✅ Accepted |
 | [0010](0010-metrics-port.md) | Metrics port at the Decider layer | ✅ Accepted |
 | [0011](0011-router.md) | Router decorator: A/B variants and multi-model routing | ✅ Accepted |
+| [0012](0012-scientific-harness.md) | Scientific performance comparison harness | 🟡 Proposed |
