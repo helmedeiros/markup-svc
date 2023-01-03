@@ -80,3 +80,10 @@ ci-local: all
 
 clean:
 	rm -f $(COVER_OUT)
+
+# Scientific harness: Docker-reproduced cross-adapter benchmarks for
+# the v0.1.0 release. See scientific/v0.1.0/README.md + ADR-0012.
+.PHONY: scientific-v0.1.0
+scientific-v0.1.0:
+	docker build -t markup-svc-scientific-v0.1.0 -f scientific/v0.1.0/Dockerfile .
+	docker run --rm markup-svc-scientific-v0.1.0
