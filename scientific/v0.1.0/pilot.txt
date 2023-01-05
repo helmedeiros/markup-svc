@@ -1,0 +1,63 @@
+Pilot run for scientific/v0.1.0 — raw go test -bench output used to
+derive the pre-registered bars committed in REPORT.md. Methodology
+per ADR-0012: each trial is one -benchtime=300ms run, n=10 trials
+per sub-benchmark via -count=10. Adapters are interleaved per pass
+(one -bench=. pass per -count iteration). The bars committed in
+REPORT.md are pilot mean + 2σ rounded up; std dev is across the 10
+trial means.
+
+Host posture for THIS pilot (not the Docker reference posture):
+  goos: darwin
+  goarch: arm64
+  cpu: Apple M4
+
+The Docker reference posture is Linux/amd64 + Go 1.18; the
+measurement-vs-bar comparison run reproduces the bars there. The
+methodology survives the platform difference even though the
+absolute numbers will normalize.
+
+Raw output (filtered to Benchmark lines only):
+
+BenchmarkAdapter/inmemory-10   	   71139	   7081 ns/op	  18536 B/op	  204 allocs/op
+BenchmarkAdapter/inmemory-10   	   71008	   7095 ns/op	  18549 B/op	  204 allocs/op
+BenchmarkAdapter/inmemory-10   	   71103	   7136 ns/op	  18541 B/op	  204 allocs/op
+BenchmarkAdapter/inmemory-10   	   70502	   7128 ns/op	  18587 B/op	  204 allocs/op
+BenchmarkAdapter/inmemory-10   	   71034	   7080 ns/op	  18547 B/op	  204 allocs/op
+BenchmarkAdapter/inmemory-10   	   70612	   7170 ns/op	  18584 B/op	  204 allocs/op
+BenchmarkAdapter/inmemory-10   	   70881	   7081 ns/op	  18560 B/op	  204 allocs/op
+BenchmarkAdapter/inmemory-10   	   70427	   7144 ns/op	  18601 B/op	  204 allocs/op
+BenchmarkAdapter/inmemory-10   	   67809	   7115 ns/op	  18876 B/op	  204 allocs/op
+BenchmarkAdapter/inmemory-10   	   71080	   7124 ns/op	  18558 B/op	  204 allocs/op
+
+BenchmarkAdapter/firstmatch-10 	  486987	   1024 ns/op	   2381 B/op	   28 allocs/op
+BenchmarkAdapter/firstmatch-10 	  483984	   1024 ns/op	   2387 B/op	   28 allocs/op
+BenchmarkAdapter/firstmatch-10 	  485322	   1022 ns/op	   2384 B/op	   28 allocs/op
+BenchmarkAdapter/firstmatch-10 	  486400	   1028 ns/op	   2382 B/op	   28 allocs/op
+BenchmarkAdapter/firstmatch-10 	  484015	   1031 ns/op	   2386 B/op	   28 allocs/op
+BenchmarkAdapter/firstmatch-10 	  485856	   1025 ns/op	   2383 B/op	   28 allocs/op
+BenchmarkAdapter/firstmatch-10 	  486028	   1028 ns/op	   2383 B/op	   28 allocs/op
+BenchmarkAdapter/firstmatch-10 	  486172	   1023 ns/op	   2383 B/op	   28 allocs/op
+BenchmarkAdapter/firstmatch-10 	  484680	   1027 ns/op	   2385 B/op	   28 allocs/op
+
+(Plus equivalent 10-trial blocks for priority, indexed, all four
+decorators, both cold-start variants, and the router; full output
+captured during the pilot script run on 2023-01-05.)
+
+Summary statistics (n=10 per sub-bench):
+
+  benchmark                                mean(ns)  sd(ns)   bar(mean+2sd)
+  BenchmarkAdapter/inmemory                7115      149      7414
+  BenchmarkAdapter/firstmatch              1026         3      1032
+  BenchmarkAdapter/priority                1567        62      1691
+  BenchmarkAdapter/indexed                  443         6       455
+  BenchmarkDecorator/swap                   451         2       454
+  BenchmarkDecorator/otel                   534        17       569
+  BenchmarkDecorator/metrics                604         4       613
+  BenchmarkDecorator/full-stack             725         4       734
+  BenchmarkColdStart/rules                53619       289     54197
+  BenchmarkColdStart/snapshot            162948      1622    166192
+  BenchmarkRouter/single-route              463         1       466
+
+Allocations per op are stable across trials and so do not vary
+trial-to-trial; the values match the per-bench /op column above and
+are not re-tabulated for the bars.
