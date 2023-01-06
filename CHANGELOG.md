@@ -7,6 +7,12 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- `scientific/v0.1.0/`: cross-adapter, cross-decorator benchmark harness with pre-registered bars. Docker pins Linux/amd64 + Go 1.18 + the rule-set fixture for reproducibility. The harness measures per-`Decide` latency for every adapter, decorator overhead at each layer, cold-start cost (rules vs snapshot), and router overhead. Methodology per ADR-0012: each trial is one `-benchtime=1s` run; n=50 trials interleaved per `-count` pass so host noise hits every measurement equally; bars are committed before measurement and do not move once committed. The v0.1.0 measurement confirms all 11 absolute bars and all 4 ordinal bars pass on the reference fixture, including the surprising `ColdStart/rules < ColdStart/snapshot` at 50 rules (the JSON-decode allocations dominate the savings from skipping the parser at this rule-set size; the crossover is real and is the next harness's gap to close).
+- `make scientific-v0.1.0` target wraps the Docker build + run so any operator can reproduce the same measurements with one command.
+- ADR-0012 (Accepted): scientific performance comparison harness.
+
 ## [0.1.0] - 2022-12-16
 
 First minor release. The `v0.0.x` line shipped the engine adapter matrix, observability decorators, snapshot persistence, and hot reload one piece at a time; `v0.1.0` adds the last shape the original premise promised — variant routing and multi-model deployments — and signals the first commitment toward API stability. The exported types in `internal/markup` (Request, Decision, Decider, ErrNoMatch, FactOf), the four adapter packages, the swap holder, both observability decorators, and the router are now considered stable; breaking changes carry a SemVer bump.

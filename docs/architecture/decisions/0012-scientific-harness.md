@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — proposes `scientific/v0.1.0/` as the first cross-adapter, cross-decorator benchmark harness. Reproducible run target via Docker + Makefile so any operator can re-run the same measurements on any hardware and get comparable numbers. Pre-registered "bars" (claims under test) are written down before any measurement is taken; bars never move after they are committed; failing to meet a bar is reported honestly rather than retconned.
+Accepted — `scientific/v0.1.0/` ships in the same release window. The harness scaffolding (Dockerfile, fixture, Makefile target, README, smoke test) landed in commit `0597d4c`; the benchmark function implementations in `dca898b`; the pre-registered bars + pilot raw output in `558c78c`. The measurement-vs-bar comparison is in `REPORT.md` and confirms all 11 absolute bars and all 4 ordinal bars pass — including the surprising `ColdStart/rules < ColdStart/snapshot` bar that ADR-0007's intuition would have inverted. The two-commit split between pre-registration and measurement worked as designed: bars committed before any number was taken, bars unchanged in the measurement commit.
 
 ## Context
 
