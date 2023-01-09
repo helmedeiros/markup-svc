@@ -112,6 +112,10 @@ The active route's `ModelVersion` and `Variant` are stamped onto every Decision'
 
 Per-route hot reload: `POST /admin/reload` with body `{"model_version": "v1"}` reloads only the v1 route's source from disk. See [ADR-0011](docs/architecture/decisions/0011-router.md).
 
+## Cookbook
+
+Operator-level recipes for common deployments live under [`docs/cookbook/`](docs/cookbook/). Start with [deploy.md](docs/cookbook/deploy.md) for the production-readiness recipe, then pick the others as needed (A/B rollouts, hot reload, snapshot promotion, multi-model serving, observability wiring).
+
 ## Architecture Decision Records
 
 - [ADR-0001](docs/architecture/decisions/0001-domain-port.md) — Domain port: `Decider` interface
