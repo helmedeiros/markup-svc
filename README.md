@@ -7,7 +7,7 @@ A dynamic markup service built on top of [bre-go](https://github.com/helmedeiros
 [![CI](https://github.com/helmedeiros/markup-svc/actions/workflows/ci.yml/badge.svg)](https://github.com/helmedeiros/markup-svc/actions/workflows/ci.yml)
 [![coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/helmedeiros/markup-svc/badges/coverage.json)](https://github.com/helmedeiros/markup-svc/actions/workflows/ci.yml)
 
-Pre-release. Three accepted ADRs: the domain port, the CSV rule format, and the HTTP transport. The first usable build serves `POST /decide` against a CSV-loaded inmemory `Decider`.
+Released `v0.1.0`. 12 Accepted ADRs covering the domain port, the CSV rule format, the HTTP transport, all four engine adapters, snapshot persistence, hot reload, OpenTelemetry spans, the metrics port, the router (A/B + multi-model), and the scientific performance harness. The exported types on `internal/markup` plus the four adapter packages, the swap holder, the router, and the two observability decorators are committed surfaces — breaking changes carry a SemVer bump.
 
 ## Quickstart
 
@@ -37,6 +37,23 @@ Response:
   "engine_adapter": "*inmemory.Engine"
 }
 ```
+
+## bre-go capability matrix
+
+Every capability the project set out to demonstrate against the [bre-go](https://github.com/helmedeiros/bre-go) engine library, and where it is wired in markup-svc:
+
+| bre-go feature | markup-svc surface | Status |
+|---|---|---|
+| Four engine adapters (inmemory / firstmatch / priority / indexed) | `internal/decider/<adapter>` + `cmd/markup-server --adapter` dispatch | ✅ |
+| CSV loader (`engine/csv`) | `internal/load.FromCSV` (typed `parser.Condition` pre-compiled at load) | ✅ |
+| Typed `parser.Condition` tree | end-to-end; rules and snapshots both ride on the typed tree | ✅ |
+| Correlation ID through context | `internal/httpapi.WithCorrelationID` middleware → `engine.WithCorrelationID` → every Decision | ✅ |
+| JSON snapshot (`engine/indexed.Snapshot`) | `internal/snapshot` + `cmd/snapshot-build` + `cmd/markup-server --snapshot` | ✅ |
+| Hot reload | `internal/decider/swap` + `POST /admin/reload` (per-route in multi-route mode) | ✅ |
+| OTel span adapter (`observability/otel`) | `internal/observability/otel.Wrap` at the `markup.Decider` port + `--otel-enabled` | ✅ |
+| Metrics port + decorator (`observability/metrics`) | `internal/observability/metrics` (library-only; operators wire their own `Sink`) | ✅ |
+| A/B routing + multi-model | `internal/decider/router` + `--route` + `--policy` | ✅ |
+| Compiled binary snapshot (`engine/indexed.CompiledSnapshot`) | not yet wired; the JSON snapshot is the v0.1.0 format | ⏳ deferred to its own ADR |
 
 ## Architecture
 
@@ -112,6 +129,14 @@ The active route's `ModelVersion` and `Variant` are stamped onto every Decision'
 
 Per-route hot reload: `POST /admin/reload` with body `{"model_version": "v1"}` reloads only the v1 route's source from disk. See [ADR-0011](docs/architecture/decisions/0011-router.md).
 
+## Performance
+
+`scientific/v0.1.0/` ships a Docker-reproduced, pre-registered benchmark harness comparing the four adapters, the three decorators (swap / OTel / metrics), and cold-start cost (CSV vs snapshot). See [REPORT.md](scientific/v0.1.0/REPORT.md) for the v0.1.0 measurement table. Methodology and the falsifiable-bars discipline (bars committed before measurement, never moved post-commit) are documented in [ADR-0012](docs/architecture/decisions/0012-scientific-harness.md). Run the harness yourself with:
+
+```sh
+make scientific-v0.1.0
+```
+
 ## Cookbook
 
 Operator-level recipes for common deployments live under [`docs/cookbook/`](docs/cookbook/). Start with [deploy.md](docs/cookbook/deploy.md) for the production-readiness recipe, then pick the others as needed (A/B rollouts, hot reload, snapshot promotion, multi-model serving, observability wiring).
@@ -129,6 +154,7 @@ Operator-level recipes for common deployments live under [`docs/cookbook/`](docs
 - [ADR-0009](docs/architecture/decisions/0009-otel-spans.md) — OpenTelemetry spans at the Decider port
 - [ADR-0010](docs/architecture/decisions/0010-metrics-port.md) — Metrics port at the Decider layer
 - [ADR-0011](docs/architecture/decisions/0011-router.md) — Router decorator: A/B variants and multi-model routing
+- [ADR-0012](docs/architecture/decisions/0012-scientific-harness.md) — Scientific performance comparison harness
 
 ## Quality gates
 
