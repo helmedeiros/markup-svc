@@ -7,11 +7,17 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.1] - 2023-01-13
+
+Documentation + scientific harness patch release. No API changes; every exported surface from `v0.1.0` is unchanged. This release adds the falsifiable performance baselines and the operator-facing cookbook the project deferred to the polish phase.
+
 ### Added
 
 - `scientific/v0.1.0/`: cross-adapter, cross-decorator benchmark harness with pre-registered bars. Docker pins Linux/amd64 + Go 1.18 + the rule-set fixture for reproducibility. The harness measures per-`Decide` latency for every adapter, decorator overhead at each layer, cold-start cost (rules vs snapshot), and router overhead. Methodology per ADR-0012: each trial is one `-benchtime=1s` run; n=50 trials interleaved per `-count` pass so host noise hits every measurement equally; bars are committed before measurement and do not move once committed. The v0.1.0 measurement confirms all 11 absolute bars and all 4 ordinal bars pass on the reference fixture, including the surprising `ColdStart/rules < ColdStart/snapshot` at 50 rules (the JSON-decode allocations dominate the savings from skipping the parser at this rule-set size; the crossover is real and is the next harness's gap to close).
 - `make scientific-v0.1.0` target wraps the Docker build + run so any operator can reproduce the same measurements with one command.
 - ADR-0012 (Accepted): scientific performance comparison harness.
+- `docs/cookbook/`: operator-level recipes following a 5-part template (Problem / Recipe / What's happening / What to check after / Relevant ADRs and flags). Six recipes ship: production deployment, A/B rollout, hot reload (single-route + per-route), snapshot promotion via CI/CD, multi-model serving, observability (OTel spans + the metrics-port sink-writing pattern). Each recipe is honest about what `cmd/markup-server` wires vs what operators write themselves (e.g., the metrics decorator is library-only — operators implement a Prometheus or OTel-metrics `Sink` against the port).
+- README: post-v0.1.0 status (12 Accepted ADRs, committed API surface, SemVer-bump promise), `bre-go` capability matrix mapping every demonstrated feature to its markup-svc surface, a Performance section linking the scientific harness and the `make scientific-v0.1.0` target, and ADR-0012 added to the ADR index.
 
 ## [0.1.0] - 2022-12-16
 
@@ -86,7 +92,8 @@ First usable build: `POST /decide` against a CSV-loaded inmemory `Decider`, with
 - README.md with quickstart, architecture table, HTTP contract table, ADR links, and CI + coverage badges.
 - Project `.gitignore` (excludes `*.local.md`).
 
-[Unreleased]: https://github.com/helmedeiros/markup-svc/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/helmedeiros/markup-svc/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/helmedeiros/markup-svc/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/helmedeiros/markup-svc/compare/v0.0.4...v0.1.0
 [0.0.4]: https://github.com/helmedeiros/markup-svc/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/helmedeiros/markup-svc/compare/v0.0.2...v0.0.3
