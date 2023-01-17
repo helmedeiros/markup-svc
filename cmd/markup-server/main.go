@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -162,12 +163,28 @@ func loadRulesFromFile(path string) ([]load.Rule, error) {
 	return rules, nil
 }
 
+// readyState is the package-level atomic flag the /readyz handler
+// reads on every probe. Set to 1 after the initial Decider
+// construction succeeds. atomic.Int32 (vs atomic.Bool) for the
+// project's Go 1.18 baseline.
+var readyState int32
+
+func markReady() { atomic.StoreInt32(&readyState, 1) }
+
+func isReady() (string, bool) {
+	if atomic.LoadInt32(&readyState) == 1 {
+		return "", true
+	}
+	return "decider not built", false
+}
+
 // wireHandler runs loader once for the initial Decider, wraps it in a
 // swap.Decider holder, mounts /decide on the holder, and mounts
 // /admin/reload on the same holder + loader so hot reloads re-run
-// the same load path against the current file contents. The
-// returned http.Handler is the production wiring -- same shape used
-// by tests so they exercise the real seam.
+// the same load path against the current file contents. /healthz
+// and /readyz are mounted alongside per ADR-0013. The returned
+// http.Handler is the production wiring -- same shape used by
+// tests so they exercise the real seam.
 func wireHandler(loader httpapi.Loader) (http.Handler, httpapi.ReloadResult, error) {
 	return wireTracedHandler(loader, nil)
 }
@@ -203,6 +220,9 @@ func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHol
 	if len(holders) > 0 {
 		mux.Handle("/admin/reload", routeReloadHandler(holders))
 	}
+	mux.Handle("/healthz", httpapi.Healthz())
+	mux.Handle("/readyz", httpapi.Readyz(isReady))
+	markReady()
 	return httpapi.WithCorrelationID(mux)
 }
 
@@ -350,6 +370,9 @@ func wireTracedHandler(loader httpapi.Loader, tracer trace.Tracer) (http.Handler
 	mux := http.NewServeMux()
 	mux.Handle("/decide", httpapi.Decide(decideDecider))
 	mux.Handle("/admin/reload", httpapi.Reload(holder, loader))
+	mux.Handle("/healthz", httpapi.Healthz())
+	mux.Handle("/readyz", httpapi.Readyz(isReady))
+	markReady()
 	return httpapi.WithCorrelationID(mux), result, nil
 }
 
