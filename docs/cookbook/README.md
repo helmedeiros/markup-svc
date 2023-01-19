@@ -7,6 +7,7 @@ Operator-level recipes for common deployments. Each recipe is one page, names th
 | Recipe | When to use |
 |---|---|
 | [deploy.md](deploy.md) | First-time production deployment of markup-svc |
+| [k8s-deploy.md](k8s-deploy.md) | Same, but on a Kubernetes cluster via the `deploy/k8s/` kustomize base |
 | [ab-rollout.md](ab-rollout.md) | Roll a new model version out to a slice of traffic for comparison |
 | [hot-reload.md](hot-reload.md) | Push a rule fix without restarting the process |
 | [snapshot-promotion.md](snapshot-promotion.md) | Use the offline snapshot build to skip startup parsing |
