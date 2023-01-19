@@ -1,0 +1,19 @@
+# ClusterIP Service exposing markup-server's /decide endpoint to
+# in-cluster callers (and, via Ingress / Gateway, to traffic that
+# arrives through the API Gateway / BFF tier). See ADR-0003 for the
+# HTTP contract.
+apiVersion: v1
+kind: Service
+metadata:
+  name: markup-server
+  labels:
+    app.kubernetes.io/name: markup-server
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: markup-server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP

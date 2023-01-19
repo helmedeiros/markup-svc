@@ -1,0 +1,22 @@
+# HorizontalPodAutoscaler targeting average CPU utilisation. The 70 %
+# target leaves headroom for traffic spikes between scaler tick
+# intervals. ADR-0013 picks min 2 (avoid single-pod outages) and max
+# 10 (sane ceiling; operators with peak traffic past this raise it).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: markup-server
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: markup-server
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

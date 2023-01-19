@@ -1,0 +1,86 @@
+# markup-server Deployment. See ADR-0013 for the resource sizing
+# rationale (scientific harness measured ~440 ns / Decide on the
+# indexed adapter, so a single 100m-CPU pod handles thousands of
+# rps with headroom).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: markup-server
+  labels:
+    app.kubernetes.io/name: markup-server
+    app.kubernetes.io/component: pricing-decision-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: markup-server
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: markup-server
+        app.kubernetes.io/component: pricing-decision-api
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: markup-server
+          image: ghcr.io/helmedeiros/markup-svc:main
+          imagePullPolicy: IfNotPresent
+          args:
+            - --rules=/etc/markup/rules.csv
+            - --listen=:8080
+            - --model=v1
+            - --adapter=indexed
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          # /healthz / /readyz semantics per ADR-0013:
+          # livenessProbe unwedges deadlocked goroutines; the kubelet
+          # restarts the pod on probe-fail. readinessProbe gates
+          # traffic on the initial Decider construction succeeding.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 1
+            periodSeconds: 3
+            timeoutSeconds: 2
+            failureThreshold: 2
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: rules
+              mountPath: /etc/markup
+              readOnly: true
+      volumes:
+        - name: rules
+          configMap:
+            name: markup-rules

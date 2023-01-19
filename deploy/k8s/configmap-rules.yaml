@@ -1,0 +1,17 @@
+# ConfigMap carrying the rule set CSV. Mounted into the markup-server
+# container at /etc/markup/rules.csv. See ADR-0002 for the CSV format
+# and ADR-0013 for the rule-delivery design.
+#
+# Kubernetes hard-caps a ConfigMap at 1 MiB. Rule sets larger than
+# that should switch to the InitContainer + object storage pattern
+# documented in docs/cookbook/k8s-deploy.md.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: markup-rules
+data:
+  rules.csv: |
+    name,condition,factor,priority
+    enterprise,customer_tier == 'enterprise',1.15,10
+    br_peak,country == 'BR' AND time_window == 'peak',1.08,5
+    default_consumer,customer_tier == 'consumer',1.02,0

@@ -1,0 +1,13 @@
+# Base kustomization for markup-svc. See ADR-0013.
+# Overlay this from your own kustomize directory to set environment-
+# specific image tags, replica counts, resource limits, ingress, etc.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: markup-svc
+
+resources:
+  - configmap-rules.yaml
+  - deployment.yaml
+  - service.yaml
+  - hpa.yaml
