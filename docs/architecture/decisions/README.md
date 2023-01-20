@@ -31,4 +31,4 @@ NNNN-short-decision-name.md
 | [0010](0010-metrics-port.md) | Metrics port at the Decider layer | ✅ Accepted |
 | [0011](0011-router.md) | Router decorator: A/B variants and multi-model routing | ✅ Accepted |
 | [0012](0012-scientific-harness.md) | Scientific performance comparison harness | ✅ Accepted |
-| [0013](0013-production-deploy.md) | Production deployment artifacts (Dockerfile + Kubernetes manifests) | 🟡 Proposed |
+| [0013](0013-production-deploy.md) | Production deployment artifacts (Dockerfile + Kubernetes manifests) | ✅ Accepted |

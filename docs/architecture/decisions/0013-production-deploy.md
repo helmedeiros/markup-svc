@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — proposes a production-grade container image for `cmd/markup-server` and a set of vanilla Kubernetes manifests so any operator can `kubectl apply -k deploy/k8s/` and get a running service. Adds two minimal health endpoints (`/healthz`, `/readyz`) so the k8s probes have something honest to gate on. Image publication wires into the existing CI workflow on every push to `main` and on every tag.
+Accepted — every artifact ADR-0013 promised ships in the same release window. `internal/httpapi.Healthz` and `internal/httpapi.Readyz` land in commit `6bd7d36` with 100 % unit coverage of both handlers, plus e2e probe assertions in `cmd/markup-server/main_probes_test.go` covering both single-route and router-mode wiring so a future refactor that mounts the probes into only one mode is caught at the gate. `cmd/markup-server/Dockerfile` and the image-publish CI workflow land in `66f3a42`; the workflow has published the first `ghcr.io/helmedeiros/markup-svc:main` image off the next main push. `deploy/k8s/` ships the kustomize base in `627d9a3` and `docs/cookbook/k8s-deploy.md` lands in `aebf405` so operators have both the manifests and the walkthrough at the same time. `kubectl kustomize deploy/k8s/` renders cleanly without a cluster.
 
 ## Context
 
