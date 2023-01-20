@@ -7,6 +7,19 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.2] - 2023-01-20
+
+Production deployment artifacts. The binary stays unchanged (no API breaking changes); the release adds the container image, the Kubernetes manifests, the liveness / readiness probes that the kubelet uses to gate pods, and the cookbook recipe walking operators through `kubectl apply -k deploy/k8s/`.
+
+### Added
+
+- `internal/httpapi.Healthz` and `internal/httpapi.Readyz` handlers. `Healthz` returns `200 {"status":"ok"}` on `GET` (liveness; kubelet restarts a deadlocked goroutine on probe-fail); `Readyz` calls a `Ready func() (string, bool)` closure on every probe and returns `200 {"status":"ready"}` when the closure reports true, `503 {"status":"not_ready","reason":"..."}` otherwise. Both reject non-`GET` with `405` and `Allow: GET`. `cmd/markup-server` supplies the closure backed by an `atomic.Int32` flipped after the initial Decider construction succeeds.
+- `cmd/markup-server/Dockerfile`: multi-stage build (golang:1.18 → `gcr.io/distroless/static-debian11:nonroot`). `CGO_ENABLED=0 GOOS=linux GOARCH=amd64` plus `-trimpath` and `-ldflags="-s -w"`. Runs as user 65532 with `ENTRYPOINT` set so operators pass flags via `docker run <image> --rules=...`.
+- CI image-publish workflow. Builds the image on every push and PR (verification); pushes to `ghcr.io/helmedeiros/markup-svc` only on `main` and tag pushes. Tag scheme: `:sha-<8>` always, `:main` on main, `:<version>` on tag pushes.
+- `deploy/k8s/` kustomize base: `Deployment` (2 replicas, rolling with `maxUnavailable: 0`, hardened `securityContext` with `runAsNonRoot` + seccomp `RuntimeDefault` + `readOnlyRootFilesystem` + capabilities drop ALL), `Service` (ClusterIP on 8080), `ConfigMap` carrying a sample `rules.csv`, `HorizontalPodAutoscaler` (CPU 70%, min 2 / max 10). Resource requests 100m CPU / 64 MiB memory, limits 500m / 256 MiB. Probes shipped per the `/healthz` and `/readyz` semantics above.
+- `docs/cookbook/k8s-deploy.md` recipe walking operators through `kubectl apply -k deploy/k8s/`, smoke test via `kubectl port-forward`, rule update through `kubectl edit configmap` + `POST /admin/reload`, scaling, and four real mistakes-to-avoid (forgetting metrics-server, switching to `Recreate` rolling strategy, `subPath` mounting the ConfigMap, exposing the Service as `LoadBalancer`). Appendix covers the InitContainer + object-storage pattern for rule sets larger than the 1 MiB ConfigMap cap.
+- ADR-0013 (Accepted): production deployment artifacts.
+
 ## [0.1.1] - 2023-01-13
 
 Documentation + scientific harness patch release. No API changes; every exported surface from `v0.1.0` is unchanged. This release adds the falsifiable performance baselines and the operator-facing cookbook the project deferred to the polish phase.
@@ -92,7 +105,8 @@ First usable build: `POST /decide` against a CSV-loaded inmemory `Decider`, with
 - README.md with quickstart, architecture table, HTTP contract table, ADR links, and CI + coverage badges.
 - Project `.gitignore` (excludes `*.local.md`).
 
-[Unreleased]: https://github.com/helmedeiros/markup-svc/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/helmedeiros/markup-svc/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/helmedeiros/markup-svc/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/helmedeiros/markup-svc/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/helmedeiros/markup-svc/compare/v0.0.4...v0.1.0
 [0.0.4]: https://github.com/helmedeiros/markup-svc/compare/v0.0.3...v0.0.4
