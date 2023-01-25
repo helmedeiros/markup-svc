@@ -25,6 +25,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/helmedeiros/markup-svc/internal/decider/firstmatch"
+	"github.com/helmedeiros/markup-svc/internal/decider/guardrails"
 	"github.com/helmedeiros/markup-svc/internal/decider/indexed"
 	"github.com/helmedeiros/markup-svc/internal/decider/inmemory"
 	"github.com/helmedeiros/markup-svc/internal/decider/priority"
@@ -61,8 +62,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	var routeSpecs routeFlagList
 	fs.Var(&routeSpecs, "route", "repeatable; format: model:variant:type:path where type is rules|snapshot. When set, mutually exclusive with --rules/--snapshot. See ADR-0011.")
 	policyName := fs.String("policy", "hash-correlation", "routing policy when multiple --route flags are set: hash-correlation|default")
+	minFactor := fs.Float64("min-factor", 0, "guardrails: minimum allowed Decision.MarkupFactor (closed interval with --max-factor); see ADR-0014")
+	maxFactor := fs.Float64("max-factor", 0, "guardrails: maximum allowed Decision.MarkupFactor (closed interval with --min-factor); see ADR-0014")
+	allowedCountries := fs.String("allowed-countries", "", "guardrails: comma-separated list of allowed Request.Country values (e.g., BR,DE,FR); see ADR-0014")
+	requiredFields := fs.String("required-fields", "", "guardrails: comma-separated list of Request fields that must be non-empty (e.g., customer_tier,country); see ADR-0014")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	guardrailRules, gerr := buildGuardrailRules(fs, *minFactor, *maxFactor, *allowedCountries, *requiredFields)
+	if gerr != nil {
+		return gerr
 	}
 
 	routerMode := len(routeSpecs) > 0
@@ -97,7 +106,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if perr != nil {
 			return perr
 		}
-		handler = wireRouterHandler(router.New(routes, policy), tracer, holders)
+		handler = wireRouterHandler(router.New(routes, policy), tracer, holders, guardrailRules...)
 		ruleCount = total
 		bootSource = fmt.Sprintf("%d routes (policy=%s)", len(routes), *policyName)
 		bootAdapter = "router"
@@ -113,7 +122,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			bootSource = *rulesPath
 			bootAdapter = *adapter
 		}
-		h, initialResult, err := wireTracedHandler(loader, tracer)
+		h, initialResult, err := wireTracedHandler(loader, tracer, guardrailRules...)
 		if err != nil {
 			return err
 		}
@@ -210,10 +219,13 @@ func (r *routeFlagList) Set(v string) error {
 // holder. When holders is nil (legacy callers that did not build
 // per-route reload infrastructure), /admin/reload is not mounted
 // and POSTs return 404. See ADR-0011's follow-up commit.
-func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHolder) http.Handler {
+func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHolder, rules ...guardrails.Rule) http.Handler {
 	var decideDecider markup.Decider = r
+	if len(rules) > 0 {
+		decideDecider = guardrails.New(decideDecider, rules...)
+	}
 	if tracer != nil {
-		decideDecider = mkotel.Wrap(r, tracer)
+		decideDecider = mkotel.Wrap(decideDecider, tracer)
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/decide", httpapi.Decide(decideDecider))
@@ -357,15 +369,18 @@ func buildRoutes(specs routeFlagList, stderr io.Writer) ([]router.Route, []route
 // holder's inner still flows through the traced layer and continues
 // emitting spans. The /admin/reload route keeps calling holder.Swap
 // directly -- swaps are administrative, not user traffic.
-func wireTracedHandler(loader httpapi.Loader, tracer trace.Tracer) (http.Handler, httpapi.ReloadResult, error) {
+func wireTracedHandler(loader httpapi.Loader, tracer trace.Tracer, rules ...guardrails.Rule) (http.Handler, httpapi.ReloadResult, error) {
 	initial, result, err := loader()
 	if err != nil {
 		return nil, httpapi.ReloadResult{}, err
 	}
 	holder := swap.New(initial)
 	var decideDecider markup.Decider = holder
+	if len(rules) > 0 {
+		decideDecider = guardrails.New(decideDecider, rules...)
+	}
 	if tracer != nil {
-		decideDecider = mkotel.Wrap(holder, tracer)
+		decideDecider = mkotel.Wrap(decideDecider, tracer)
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/decide", httpapi.Decide(decideDecider))
@@ -447,6 +462,59 @@ func buildHandler(adapter string, rules []load.Rule, modelVersion string) (http.
 	mux := http.NewServeMux()
 	mux.Handle("/decide", httpapi.Decide(decider))
 	return httpapi.WithCorrelationID(mux), nil
+}
+
+// buildGuardrailRules assembles the []guardrails.Rule sequence from the
+// command-line flags. Returns an empty slice when no guardrail flag was
+// explicitly set on the command line -- the wire functions then mount
+// no guardrails decorator and the binary serves with zero overhead.
+//
+// Rule order matters per ADR-0014's "first-veto-wins" semantics: the
+// first vetoing rule short-circuits with its reason. The order below
+// (factor -> countries -> required fields) is the cheapest-first
+// ordering that the cookbook recipe also recommends -- a misconfigured
+// factor is the most common veto cause in operator-reported incidents.
+func buildGuardrailRules(fs *flag.FlagSet, minF, maxF float64, countriesCSV, requiredCSV string) ([]guardrails.Rule, error) {
+	setFlags := make(map[string]bool)
+	fs.Visit(func(f *flag.Flag) { setFlags[f.Name] = true })
+
+	var rules []guardrails.Rule
+	if setFlags["min-factor"] || setFlags["max-factor"] {
+		if setFlags["min-factor"] && setFlags["max-factor"] && minF > maxF {
+			return nil, fmt.Errorf("--min-factor (%g) must not exceed --max-factor (%g)", minF, maxF)
+		}
+		rules = append(rules, guardrails.FactorRange{Min: minF, Max: maxF})
+	}
+	if setFlags["allowed-countries"] {
+		parts := splitCSVFlag(countriesCSV)
+		if len(parts) == 0 {
+			return nil, fmt.Errorf("--allowed-countries was set with no values")
+		}
+		rules = append(rules, guardrails.AllowedCountries{Countries: parts})
+	}
+	if setFlags["required-fields"] {
+		parts := splitCSVFlag(requiredCSV)
+		if len(parts) == 0 {
+			return nil, fmt.Errorf("--required-fields was set with no values")
+		}
+		rules = append(rules, guardrails.RequiredFields{Fields: parts})
+	}
+	return rules, nil
+}
+
+// splitCSVFlag splits a comma-separated flag value into trimmed,
+// non-empty entries. Empty entries (from trailing commas or repeated
+// commas) are silently dropped -- they have no semantic meaning in
+// any of the guardrail rule lists.
+func splitCSVFlag(raw string) []string {
+	out := make([]string, 0, 4)
+	for _, part := range strings.Split(raw, ",") {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 // buildDecider dispatches on adapter name. Each branch is a single
