@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — proposes `internal/decider/guardrails` as a `markup.Decider`-port decorator that vetoes Decisions outside a configured envelope. A `Rule` port (single method `Check(Decision, Request) (allowed bool, reason string)`) holds the deployment-specific veto logic; the package ships three implementations (`FactorRange`, `AllowedCountries`, `RequiredFields`) that cover the common cases. Violations surface as a new sentinel `ErrGuardrailViolation`, distinct from `markup.ErrNoMatch` because the observability semantics are different (server-side veto vs domain miss).
+Accepted — `internal/decider/guardrails` ships the `markup.Decider`-port decorator with a single-method `Rule` port (`Check(ctx, decision, req) (allowed bool, reason string)`), the `ErrGuardrailViolation` sentinel, and three concrete rules (`FactorRange`, `AllowedCountries`, `RequiredFields`). The `cmd/markup-server` binary wires the rules from four flags: `--min-factor`, `--max-factor`, `--allowed-countries`, `--required-fields` — the original ADR sketched the first three; `--required-fields` was added during implementation so every shipped rule is reachable without writing Go. Composition tests pin the metrics + OTel decorator behavior under veto and pass-through paths. The four-flag e2e tests against `testdata/rules.csv` prove the wire is real work: the asymmetric pair (`--max-factor=1.0` vetoes the enterprise rule's 1.15; `--max-factor=2.0` allows it) is the production-equivalent proof.
 
 ## Context
 
@@ -87,15 +87,18 @@ type AllowedCountries struct{ Countries []string }
 type RequiredFields struct{ Fields []string }
 ```
 
-`cmd/markup-server` gains three flags wiring the shipped rules:
+`cmd/markup-server` gains four flags wiring the shipped rules:
 
 ```sh
---max-factor=3.0           # FactorRange.Max
---min-factor=0.5           # FactorRange.Min
---allowed-countries=BR,DE,FR   # AllowedCountries.Countries
+--min-factor=0.5                       # FactorRange.Min
+--max-factor=3.0                       # FactorRange.Max
+--allowed-countries=BR,DE,FR           # AllowedCountries.Countries
+--required-fields=customer_tier,country # RequiredFields.Fields
 ```
 
-When at least one of those flags is set, `wireTracedHandler` (and `wireRouterHandler`) compose `guardrails.New(inner, ...)` between the OTel decorator and the holder/router. When none are set, guardrails are not wired and there is zero per-`Decide` overhead.
+When at least one of those flags is set on the command line, `wireTracedHandler` (and `wireRouterHandler`) compose `guardrails.New(inner, rules...)` between the holder/router and the OTel decorator. Detection of "operator set the flag" uses `flag.FlagSet.Visit` rather than checking against the zero default, so `--max-factor=0` is treated as an explicit (degenerate) operator choice rather than "left at default." When no guardrail flag is set the decorator is not constructed and not in the call path — zero per-`Decide` overhead.
+
+Rule order in the assembled slice follows ADR-0014's first-veto-wins semantics and the cookbook's cheapest-first guidance: `FactorRange` → `AllowedCountries` → `RequiredFields`. Operators that want a different order write a wrapper main; the default reflects the most common veto cause in operator-reported incidents (a misconfigured factor).
 
 Operators wanting custom rules write a small wrapper main against the `Rule` port — same pattern as the metrics-sink wrapper main documented in the observability cookbook.
 

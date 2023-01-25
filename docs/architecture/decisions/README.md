@@ -32,4 +32,4 @@ NNNN-short-decision-name.md
 | [0011](0011-router.md) | Router decorator: A/B variants and multi-model routing | ✅ Accepted |
 | [0012](0012-scientific-harness.md) | Scientific performance comparison harness | ✅ Accepted |
 | [0013](0013-production-deploy.md) | Production deployment artifacts (Dockerfile + Kubernetes manifests) | ✅ Accepted |
-| [0014](0014-guardrails.md) | Guardrails decorator at the Decider port | 🟡 Proposed |
+| [0014](0014-guardrails.md) | Guardrails decorator at the Decider port | ✅ Accepted |
