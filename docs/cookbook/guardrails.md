@@ -45,7 +45,7 @@ Catch upstreams that forgot to pass a field your CSV rules rely on:
 
 Without this guardrail, a request with `{"customer_tier":""}` against a rule set that depends on `customer_tier` produces a 404 no-match. With the guardrail, the same request gets a 500 with `required field "customer_tier" is empty` in the operator log. The asymmetry tells the operator "your upstream broke" instead of "your rules don't cover this case."
 
-The supported field names are the seven string fields on the request body: `product_id`, `category`, `customer_tier`, `channel`, `country`, `inventory`, `time_window`. `Amount` (numeric) is intentionally not on the list — a zero `Amount` is a legal request.
+The supported field names are the seven string fields on the request body: `product_id`, `category`, `customer_tier`, `channel`, `country`, `inventory`, `time_window`. `Amount` (numeric) is intentionally not on the list — a zero `Amount` is a legal request. An unknown field name in `--required-fields` does NOT fail boot silently; it vetoes every request at runtime with `unknown required field "..."` in the operator log, so a typo surfaces loudly on the first `/decide` call rather than waiting for an actual missing-value request.
 
 ## Recipe — composing all three
 
@@ -60,7 +60,7 @@ Flags compose. Use as many as the deployment needs:
   --required-fields=customer_tier,country
 ```
 
-Rules are evaluated in the order `FactorRange → AllowedCountries → RequiredFields` and short-circuit on the first veto. Place the cheapest + highest-veto-rate rule first; the default ordering reflects that misconfigured factors are the most common veto cause in operator-reported incidents.
+Rules are evaluated in the order `FactorRange → AllowedCountries → RequiredFields` and short-circuit on the first veto. The order is fixed by the binary — there is no flag to reorder — and reflects that misconfigured factors are the most common veto cause in operator-reported incidents, so the cheapest check fires first.
 
 ## What's happening
 
@@ -85,6 +85,7 @@ When no guardrail flag is set on the command line, `guardrails.New` is never cal
 ## Mistakes to avoid
 
 - **Passing an empty allowlist value (`--allowed-countries=`)**: the binary refuses to boot rather than silently treating it as veto-all. If you do not want a country restriction, omit the flag entirely.
+- **Inverting the factor interval (`--min-factor=2.0 --max-factor=1.0`)**: the binary refuses to boot with `--min-factor (2) must not exceed --max-factor (1)`. Order the bounds before bumping the deployment.
 - **Confusing case in country codes**: comparisons are case-sensitive. If your upstream sends lowercase ISO codes, normalize before the request reaches `/decide`, or write a custom `Rule` that lower-cases before comparing.
 - **Putting an expensive custom Rule first when its veto rate is low**: every Decide pays the cost of every Rule until the first veto. Order rules cheapest-first if you have a custom set; a misconfigured factor rule belongs before an expensive regulatory-bounds lookup.
 - **Treating a vetoed Decision as a no-match**: the metrics + OTel decorators classify vetoes as `Err`, not `NoMatch`. A regression that conflated the two would inflate either dashboard with the wrong signal; the composition tests in `internal/decider/guardrails/composition_test.go` are the regression guard.
