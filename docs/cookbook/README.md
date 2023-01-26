@@ -13,6 +13,7 @@ Operator-level recipes for common deployments. Each recipe is one page, names th
 | [snapshot-promotion.md](snapshot-promotion.md) | Use the offline snapshot build to skip startup parsing |
 | [multi-model.md](multi-model.md) | Serve more than one model version side-by-side from one binary |
 | [observability.md](observability.md) | Wire OpenTelemetry spans and the metrics sink into your stack |
+| [guardrails.md](guardrails.md) | Veto Decisions outside a configured safety envelope before they leave the server |
 
 ## How these recipes are written
 

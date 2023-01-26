@@ -53,6 +53,7 @@ Every capability the project set out to demonstrate against the [bre-go](https:/
 | OTel span adapter (`observability/otel`) | `internal/observability/otel.Wrap` at the `markup.Decider` port + `--otel-enabled` | ✅ |
 | Metrics port + decorator (`observability/metrics`) | `internal/observability/metrics` (library-only; operators wire their own `Sink`) | ✅ |
 | A/B routing + multi-model | `internal/decider/router` + `--route` + `--policy` | ✅ |
+| Guardrails (veto Decisions outside a configured safety envelope) | `internal/decider/guardrails` + `--min-factor` / `--max-factor` / `--allowed-countries` / `--required-fields` | ✅ |
 | Compiled binary snapshot (`engine/indexed.CompiledSnapshot`) | not yet wired; the JSON snapshot is the v0.1.0 format | ⏳ deferred to its own ADR |
 
 ## Architecture
@@ -73,6 +74,7 @@ Hexagonal. `internal/markup.Decider` is the one-method port through which every 
 | `internal/snapshot` | JSON snapshot format wrapping bre-go's indexed `Snapshot` + per-rule factors |
 | `internal/observability/otel` | OpenTelemetry span decorator at the `markup.Decider` port |
 | `internal/observability/metrics` | metrics port (`DecisionMetric` + `Sink`) + decorator at the `markup.Decider` port |
+| `internal/decider/guardrails` | veto decorator at the `markup.Decider` port with a single-method `Rule` port and three shipped rules (`FactorRange`, `AllowedCountries`, `RequiredFields`) |
 | `cmd/markup-server` | application: flag parsing + lifecycle |
 | `cmd/snapshot-build` | offline CSV → snapshot JSON tool |
 
