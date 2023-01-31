@@ -464,57 +464,51 @@ func buildHandler(adapter string, rules []load.Rule, modelVersion string) (http.
 	return httpapi.WithCorrelationID(mux), nil
 }
 
-// buildGuardrailRules assembles the []guardrails.Rule sequence from the
-// command-line flags. Returns an empty slice when no guardrail flag was
-// explicitly set on the command line -- the wire functions then mount
-// no guardrails decorator and the binary serves with zero overhead.
+// buildGuardrailRules is the flag-side adapter onto guardrails.BuildRules.
+// fs.Visit detects which guardrail flags were explicitly set on the
+// command line so an unset flag becomes a nil axis in the RuleSpec
+// (no rule of that type), not a zero-value rule. Errors from BuildRules
+// are reformatted to name the --flag the operator passed so boot-fail
+// stderr remains actionable.
 //
-// Rule order matters per ADR-0014's "first-veto-wins" semantics: the
-// first vetoing rule short-circuits with its reason. The order below
-// (factor -> countries -> required fields) is the cheapest-first
-// ordering that the cookbook recipe also recommends -- a misconfigured
-// factor is the most common veto cause in operator-reported incidents.
+// Returns an empty slice when no guardrail flag was set -- the wire
+// functions then mount no guardrails decorator and the binary serves
+// with zero overhead.
 func buildGuardrailRules(fs *flag.FlagSet, minF, maxF float64, countriesCSV, requiredCSV string) ([]guardrails.Rule, error) {
 	setFlags := make(map[string]bool)
 	fs.Visit(func(f *flag.Flag) { setFlags[f.Name] = true })
 
-	var rules []guardrails.Rule
+	var spec guardrails.RuleSpec
 	if setFlags["min-factor"] || setFlags["max-factor"] {
-		if setFlags["min-factor"] && setFlags["max-factor"] && minF > maxF {
-			return nil, fmt.Errorf("--min-factor (%g) must not exceed --max-factor (%g)", minF, maxF)
-		}
-		rules = append(rules, guardrails.FactorRange{Min: minF, Max: maxF})
+		spec.Factor = &guardrails.FactorSpec{Min: minF, Max: maxF}
 	}
 	if setFlags["allowed-countries"] {
-		parts := splitCSVFlag(countriesCSV)
-		if len(parts) == 0 {
-			return nil, fmt.Errorf("--allowed-countries was set with no values")
+		spec.AllowedCountries = guardrails.SplitCSV(countriesCSV)
+		if spec.AllowedCountries == nil {
+			spec.AllowedCountries = []string{}
 		}
-		rules = append(rules, guardrails.AllowedCountries{Countries: parts})
 	}
 	if setFlags["required-fields"] {
-		parts := splitCSVFlag(requiredCSV)
-		if len(parts) == 0 {
-			return nil, fmt.Errorf("--required-fields was set with no values")
+		spec.RequiredFields = guardrails.SplitCSV(requiredCSV)
+		if spec.RequiredFields == nil {
+			spec.RequiredFields = []string{}
 		}
-		rules = append(rules, guardrails.RequiredFields{Fields: parts})
 	}
-	return rules, nil
-}
 
-// splitCSVFlag splits a comma-separated flag value into trimmed,
-// non-empty entries. Empty entries (from trailing commas or repeated
-// commas) are silently dropped -- they have no semantic meaning in
-// any of the guardrail rule lists.
-func splitCSVFlag(raw string) []string {
-	out := make([]string, 0, 4)
-	for _, part := range strings.Split(raw, ",") {
-		trimmed := strings.TrimSpace(part)
-		if trimmed != "" {
-			out = append(out, trimmed)
-		}
+	rules, err := guardrails.BuildRules(spec)
+	if err == nil {
+		return rules, nil
 	}
-	return out
+	switch {
+	case errors.Is(err, guardrails.ErrFactorRangeInverted):
+		return nil, fmt.Errorf("--min-factor (%g) must not exceed --max-factor (%g)", minF, maxF)
+	case errors.Is(err, guardrails.ErrAllowedCountriesEmpty):
+		return nil, fmt.Errorf("--allowed-countries was set with no values")
+	case errors.Is(err, guardrails.ErrRequiredFieldsEmpty):
+		return nil, fmt.Errorf("--required-fields was set with no values")
+	default:
+		return nil, err
+	}
 }
 
 // buildDecider dispatches on adapter name. Each branch is a single
