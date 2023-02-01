@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — proposes `guardrails.Holder` (mirroring `swap.Decider`) plus a `POST /admin/guardrails` admin endpoint so operators can update the configured rule set without restarting the process. A companion `GET /admin/guardrails` returns the current configuration so operators can inspect drift before editing. Existing boot flags from ADR-0014 stay; hot-reload is an opt-in wiring choice in `cmd/markup-server`.
+Accepted — `internal/decider/guardrails` ships the Holder with the minimum-lock-hold pattern from `swap.Decider`; `internal/httpapi` ships the `GuardrailsAdmin` handler for `POST` (typed JSON body, `DisallowUnknownFields`, 400-on-validation-failure) and `GET` (live snapshot). `cmd/markup-server` gains `--guardrails-admin` (default off); when set, `buildGuardrailsWiring` constructs a Holder pre-loaded with the boot-flag rules and mounts the admin endpoint on the same mux as `/decide` for both single-engine and router-mode deployments. The four-flag boot-time wiring from ADR-0014 stays unchanged when `--guardrails-admin` is not set — the immutable decorator preserves the zero-lock-overhead production posture. Validation logic moved into the shared `guardrails.BuildRules` so the boot-flag and admin paths accept and reject identical configurations. The `DisallowUnknownFields` posture on the POST decoder is intentional: schema additions are a forward-only break so operators running a newer body against an older binary surface the mismatch loudly.
 
 ## Context
 
