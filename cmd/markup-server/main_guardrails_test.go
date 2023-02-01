@@ -102,12 +102,13 @@ func TestBuildGuardrailRulesAssemblesAllThreeRulesInOrder(t *testing.T) {
 
 // newGuardedE2EServer boots a real production wire stack via
 // wireTracedHandler against testdata/rules.csv with the provided
-// guardrail rules. Mirrors the path run() takes when its --max-factor
-// / --allowed-countries / --required-fields flags are set.
+// guardrail rules. Mirrors the path run() takes when its boot flags
+// are set but --guardrails-admin is NOT (immutable decorator).
 func newGuardedE2EServer(t *testing.T, rules ...guardrails.Rule) *httptest.Server {
 	t.Helper()
 	loader := rulesLoader("testdata/rules.csv", "inmemory", "v0-e2e", io.Discard)
-	handler, _, err := wireTracedHandler(loader, nil, rules...)
+	gw := buildGuardrailsWiring(false, rules, io.Discard)
+	handler, _, err := wireTracedHandler(loader, nil, gw)
 	if err != nil {
 		t.Fatalf("wireTracedHandler: %v", err)
 	}
@@ -180,6 +181,119 @@ func TestE2EGuardrailsAllowedCountriesRejectsUnlistedCountry(t *testing.T) {
 	if resp.StatusCode != http.StatusInternalServerError {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d (body=%s), want 500", resp.StatusCode, body)
+	}
+}
+
+// newAdminGuardedE2EServer boots a production wire stack with
+// --guardrails-admin enabled. Mirrors the path run() takes when an
+// operator passes --guardrails-admin so the Holder is wired and the
+// /admin/guardrails endpoint is mounted alongside /decide.
+func newAdminGuardedE2EServer(t *testing.T, rules ...guardrails.Rule) *httptest.Server {
+	t.Helper()
+	loader := rulesLoader("testdata/rules.csv", "inmemory", "v0-e2e", io.Discard)
+	gw := buildGuardrailsWiring(true, rules, io.Discard)
+	handler, _, err := wireTracedHandler(loader, nil, gw)
+	if err != nil {
+		t.Fatalf("wireTracedHandler: %v", err)
+	}
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestE2EGuardrailsAdminPOSTReplacesActiveRules confirms the
+// production wire stack respects POST /admin/guardrails: a request
+// that was passing under the boot configuration starts failing after
+// an admin POST that tightens the bounds.
+func TestE2EGuardrailsAdminPOSTReplacesActiveRules(t *testing.T) {
+	srv := newAdminGuardedE2EServer(t, guardrails.FactorRange{Min: 0.0, Max: 3.0})
+
+	// Initial: enterprise rule produces 1.15, passes <=3.0 bound.
+	resp, err := http.Post(srv.URL+"/decide", "application/json",
+		strings.NewReader(`{"customer_tier":"enterprise"}`))
+	if err != nil {
+		t.Fatalf("pre-POST: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("pre-POST /decide status = %d (body=%s), want 200", resp.StatusCode, body)
+	}
+	resp.Body.Close()
+
+	// Tighten via admin: max=1.0 vetoes the 1.15 enterprise factor.
+	adminResp, err := http.Post(srv.URL+"/admin/guardrails", "application/json",
+		strings.NewReader(`{"factor_range":{"min":0.0,"max":1.0}}`))
+	if err != nil {
+		t.Fatalf("admin POST: %v", err)
+	}
+	adminResp.Body.Close()
+	if adminResp.StatusCode != http.StatusOK {
+		t.Fatalf("admin POST status = %d, want 200", adminResp.StatusCode)
+	}
+
+	// Post-admin: same request now vetoed (500).
+	resp, err = http.Post(srv.URL+"/decide", "application/json",
+		strings.NewReader(`{"customer_tier":"enterprise"}`))
+	if err != nil {
+		t.Fatalf("post-admin /decide: %v", err)
+	}
+	if resp.StatusCode != http.StatusInternalServerError {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("post-POST /decide status = %d (body=%s), want 500", resp.StatusCode, body)
+	}
+	resp.Body.Close()
+
+	// Loosen again via admin: same request passes again.
+	adminResp, err = http.Post(srv.URL+"/admin/guardrails", "application/json",
+		strings.NewReader(`{"factor_range":{"min":0.0,"max":3.0}}`))
+	if err != nil {
+		t.Fatalf("loosen admin POST: %v", err)
+	}
+	adminResp.Body.Close()
+
+	resp, err = http.Post(srv.URL+"/decide", "application/json",
+		strings.NewReader(`{"customer_tier":"enterprise"}`))
+	if err != nil {
+		t.Fatalf("post-loosen /decide: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("post-loosen /decide status = %d, want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+// TestE2EGuardrailsAdminGETReturnsCurrentConfig confirms GET on the
+// admin endpoint returns the live configuration mounted by the wire.
+func TestE2EGuardrailsAdminGETReturnsCurrentConfig(t *testing.T) {
+	srv := newAdminGuardedE2EServer(t, guardrails.FactorRange{Min: 0.5, Max: 2.5})
+
+	resp, err := http.Get(srv.URL + "/admin/guardrails")
+	if err != nil {
+		t.Fatalf("admin GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin GET status = %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `"min":0.5`) || !strings.Contains(string(body), `"max":2.5`) {
+		t.Errorf("admin GET body = %q, want factor_range with min=0.5 max=2.5", string(body))
+	}
+}
+
+// TestE2EGuardrailsAdminAbsentWhenNotEnabled confirms /admin/guardrails
+// is 404 when --guardrails-admin is NOT set (the existing immutable
+// boot-flag wiring path).
+func TestE2EGuardrailsAdminAbsentWhenNotEnabled(t *testing.T) {
+	srv := newGuardedE2EServer(t, guardrails.FactorRange{Min: 0.0, Max: 3.0})
+
+	resp, err := http.Get(srv.URL + "/admin/guardrails")
+	if err != nil {
+		t.Fatalf("admin GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 (admin endpoint not mounted)", resp.StatusCode)
 	}
 }
 

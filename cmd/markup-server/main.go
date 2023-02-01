@@ -66,6 +66,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	maxFactor := fs.Float64("max-factor", 0, "guardrails: maximum allowed Decision.MarkupFactor (closed interval with --min-factor); see ADR-0014")
 	allowedCountries := fs.String("allowed-countries", "", "guardrails: comma-separated list of allowed Request.Country values (e.g., BR,DE,FR); see ADR-0014")
 	requiredFields := fs.String("required-fields", "", "guardrails: comma-separated list of Request fields that must be non-empty (e.g., customer_tier,country); see ADR-0014")
+	guardrailsAdmin := fs.Bool("guardrails-admin", false, "mount POST/GET /admin/guardrails for hot-replacing the active rule set without restart (see ADR-0015); enables Holder-based wiring with a ~10 ns lock-pair per Decide")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -73,6 +74,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if gerr != nil {
 		return gerr
 	}
+	guardWiring := buildGuardrailsWiring(*guardrailsAdmin, guardrailRules, stderr)
 
 	routerMode := len(routeSpecs) > 0
 	if routerMode && (*rulesPath != "" || *snapshotPath != "") {
@@ -106,7 +108,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if perr != nil {
 			return perr
 		}
-		handler = wireRouterHandler(router.New(routes, policy), tracer, holders, guardrailRules...)
+		handler = wireRouterHandler(router.New(routes, policy), tracer, holders, guardWiring)
 		ruleCount = total
 		bootSource = fmt.Sprintf("%d routes (policy=%s)", len(routes), *policyName)
 		bootAdapter = "router"
@@ -122,7 +124,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			bootSource = *rulesPath
 			bootAdapter = *adapter
 		}
-		h, initialResult, err := wireTracedHandler(loader, tracer, guardrailRules...)
+		h, initialResult, err := wireTracedHandler(loader, tracer, guardWiring)
 		if err != nil {
 			return err
 		}
@@ -195,7 +197,55 @@ func isReady() (string, bool) {
 // http.Handler is the production wiring -- same shape used by
 // tests so they exercise the real seam.
 func wireHandler(loader httpapi.Loader) (http.Handler, httpapi.ReloadResult, error) {
-	return wireTracedHandler(loader, nil)
+	return wireTracedHandler(loader, nil, guardrailsWire{})
+}
+
+// guardrailsWire bundles the optional guardrails-decorator layer and
+// the optional admin-mount closure so the wire functions take one
+// parameter regardless of which mode (no guardrails / immutable
+// boot-flag rules / Holder + admin) is active. The zero value is
+// "no guardrails, no admin endpoint" -- the binary serves with zero
+// per-Decide overhead from this layer.
+//
+// wrap, when non-nil, is applied to the inner Decider between the
+// holder/router and the OTel decorator. mountAdmin, when non-nil, is
+// called with the same mux that mounts /decide so the admin endpoint
+// lives alongside the rest of the routes (and inherits the same
+// correlation-ID middleware).
+type guardrailsWire struct {
+	wrap       func(markup.Decider) markup.Decider
+	mountAdmin func(*http.ServeMux)
+}
+
+// buildGuardrailsWiring picks the active guardrails mode from the
+// flags and assembles the wire helper.
+//
+//   - adminEnabled && no rules: Holder starts empty; operators set
+//     the configuration via POST /admin/guardrails.
+//   - adminEnabled && rules: Holder starts with the boot-flag rules;
+//     operators can still POST a replacement at runtime.
+//   - !adminEnabled && rules: immutable guardrails.New decorator,
+//     zero lock overhead per ADR-0014.
+//   - !adminEnabled && no rules: zero value of guardrailsWire; the
+//     decorator is not mounted.
+func buildGuardrailsWiring(adminEnabled bool, rules []guardrails.Rule, errLog io.Writer) guardrailsWire {
+	if adminEnabled {
+		holder := guardrails.NewHolder(rules...)
+		return guardrailsWire{
+			wrap: holder.Wrap,
+			mountAdmin: func(mux *http.ServeMux) {
+				mux.Handle("/admin/guardrails", httpapi.GuardrailsAdmin(holder, errLog))
+			},
+		}
+	}
+	if len(rules) == 0 {
+		return guardrailsWire{}
+	}
+	return guardrailsWire{
+		wrap: func(inner markup.Decider) markup.Decider {
+			return guardrails.New(inner, rules...)
+		},
+	}
 }
 
 // routeFlagList accumulates repeated --route flag values into a slice
@@ -219,10 +269,10 @@ func (r *routeFlagList) Set(v string) error {
 // holder. When holders is nil (legacy callers that did not build
 // per-route reload infrastructure), /admin/reload is not mounted
 // and POSTs return 404. See ADR-0011's follow-up commit.
-func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHolder, rules ...guardrails.Rule) http.Handler {
+func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHolder, gw guardrailsWire) http.Handler {
 	var decideDecider markup.Decider = r
-	if len(rules) > 0 {
-		decideDecider = guardrails.New(decideDecider, rules...)
+	if gw.wrap != nil {
+		decideDecider = gw.wrap(decideDecider)
 	}
 	if tracer != nil {
 		decideDecider = mkotel.Wrap(decideDecider, tracer)
@@ -231,6 +281,9 @@ func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHol
 	mux.Handle("/decide", httpapi.Decide(decideDecider))
 	if len(holders) > 0 {
 		mux.Handle("/admin/reload", routeReloadHandler(holders))
+	}
+	if gw.mountAdmin != nil {
+		gw.mountAdmin(mux)
 	}
 	mux.Handle("/healthz", httpapi.Healthz())
 	mux.Handle("/readyz", httpapi.Readyz(isReady))
@@ -369,15 +422,15 @@ func buildRoutes(specs routeFlagList, stderr io.Writer) ([]router.Route, []route
 // holder's inner still flows through the traced layer and continues
 // emitting spans. The /admin/reload route keeps calling holder.Swap
 // directly -- swaps are administrative, not user traffic.
-func wireTracedHandler(loader httpapi.Loader, tracer trace.Tracer, rules ...guardrails.Rule) (http.Handler, httpapi.ReloadResult, error) {
+func wireTracedHandler(loader httpapi.Loader, tracer trace.Tracer, gw guardrailsWire) (http.Handler, httpapi.ReloadResult, error) {
 	initial, result, err := loader()
 	if err != nil {
 		return nil, httpapi.ReloadResult{}, err
 	}
 	holder := swap.New(initial)
 	var decideDecider markup.Decider = holder
-	if len(rules) > 0 {
-		decideDecider = guardrails.New(decideDecider, rules...)
+	if gw.wrap != nil {
+		decideDecider = gw.wrap(decideDecider)
 	}
 	if tracer != nil {
 		decideDecider = mkotel.Wrap(decideDecider, tracer)
@@ -385,6 +438,9 @@ func wireTracedHandler(loader httpapi.Loader, tracer trace.Tracer, rules ...guar
 	mux := http.NewServeMux()
 	mux.Handle("/decide", httpapi.Decide(decideDecider))
 	mux.Handle("/admin/reload", httpapi.Reload(holder, loader))
+	if gw.mountAdmin != nil {
+		gw.mountAdmin(mux)
+	}
 	mux.Handle("/healthz", httpapi.Healthz())
 	mux.Handle("/readyz", httpapi.Readyz(isReady))
 	markReady()

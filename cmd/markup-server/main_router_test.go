@@ -65,7 +65,7 @@ func TestE2ERouterAsymmetryOverHTTP(t *testing.T) {
 		t.Fatalf("pickRouterPolicy: %v", err)
 	}
 	r := router.New(routes, policy)
-	srv := httptest.NewServer(wireRouterHandler(r, nil, holders))
+	srv := httptest.NewServer(wireRouterHandler(r, nil, holders, guardrailsWire{}))
 	t.Cleanup(srv.Close)
 
 	// Find two correlation IDs that the hash sends to different routes
@@ -111,7 +111,7 @@ func TestE2ERouterStickyByCorrelationIDOverHTTP(t *testing.T) {
 	}
 	policy, _ := pickRouterPolicy("hash-correlation")
 	r := router.New(routes, policy)
-	srv := httptest.NewServer(wireRouterHandler(r, nil, holders))
+	srv := httptest.NewServer(wireRouterHandler(r, nil, holders, guardrailsWire{}))
 	t.Cleanup(srv.Close)
 
 	first := decideRouterFactor(t, srv.URL, "trace-sticky-1")
@@ -139,7 +139,7 @@ func TestE2ERouterReloadWithoutHoldersReturns404(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := router.New(routes, router.DefaultPolicy{})
-	srv := httptest.NewServer(wireRouterHandler(r, nil, nil))
+	srv := httptest.NewServer(wireRouterHandler(r, nil, nil, guardrailsWire{}))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Post(srv.URL+"/admin/reload", "application/json", nil)
@@ -172,7 +172,7 @@ func TestE2ERouterPerRouteReloadOverHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := router.New(routes, router.DefaultPolicy{})
-	srv := httptest.NewServer(wireRouterHandler(r, nil, holders))
+	srv := httptest.NewServer(wireRouterHandler(r, nil, holders, guardrailsWire{}))
 	t.Cleanup(srv.Close)
 
 	// DefaultPolicy always picks the first route (v1); we need to
@@ -236,7 +236,7 @@ func TestE2ERouterReloadUnknownModelReturns404(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := router.New(routes, router.DefaultPolicy{})
-	srv := httptest.NewServer(wireRouterHandler(r, nil, holders))
+	srv := httptest.NewServer(wireRouterHandler(r, nil, holders, guardrailsWire{}))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Post(srv.URL+"/admin/reload", "application/json",
@@ -261,7 +261,7 @@ func TestE2ERouterReloadMalformedBodyReturns400(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := router.New(routes, router.DefaultPolicy{})
-	srv := httptest.NewServer(wireRouterHandler(r, nil, holders))
+	srv := httptest.NewServer(wireRouterHandler(r, nil, holders, guardrailsWire{}))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Post(srv.URL+"/admin/reload", "application/json",
@@ -286,7 +286,7 @@ func TestE2ERouterReloadFailingLoaderReturns500AndKeepsOldDecider(t *testing.T) 
 		t.Fatal(err)
 	}
 	r := router.New(routes, router.DefaultPolicy{})
-	srv := httptest.NewServer(wireRouterHandler(r, nil, holders))
+	srv := httptest.NewServer(wireRouterHandler(r, nil, holders, guardrailsWire{}))
 	t.Cleanup(srv.Close)
 
 	// Corrupt the v1 CSV so the loader fails on reload.
@@ -324,7 +324,7 @@ func TestE2ERouterReloadGetMethodReturns405(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := router.New(routes, router.DefaultPolicy{})
-	srv := httptest.NewServer(wireRouterHandler(r, nil, holders))
+	srv := httptest.NewServer(wireRouterHandler(r, nil, holders, guardrailsWire{}))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/admin/reload")
@@ -455,4 +455,76 @@ func findDifferingCorrelationIDs(t *testing.T, baseURL string) (string, string) 
 	}
 	t.Fatal("failed to find two correlation IDs that route to different variants in 100 attempts")
 	return "", ""
+}
+
+// TestE2ERouterModeGuardrailsAdminMounts confirms the
+// --guardrails-admin endpoint mounts in router mode and that a POST
+// to it tightens the active envelope so a previously-passing route
+// returns 500 afterward. The asymmetry across the same correlation
+// ID before and after the admin POST is the proof.
+func TestE2ERouterModeGuardrailsAdminMounts(t *testing.T) {
+	pathA, pathB := writeTwoRouteCSVs(t)
+	specs := routeFlagList{
+		fmt.Sprintf("v1:control:rules:%s", pathA),
+		fmt.Sprintf("v2:treatment:rules:%s", pathB),
+	}
+	routes, holders, _, err := buildRoutes(specs, io.Discard)
+	if err != nil {
+		t.Fatalf("buildRoutes: %v", err)
+	}
+	policy, _ := pickRouterPolicy("hash-correlation")
+	r := router.New(routes, policy)
+
+	// Admin enabled, no boot rules -- the Holder starts empty, both
+	// routes pass everything until the admin POST tightens.
+	gw := buildGuardrailsWiring(true, nil, io.Discard)
+	srv := httptest.NewServer(wireRouterHandler(r, nil, holders, gw))
+	t.Cleanup(srv.Close)
+
+	// Probe baseline: both routes produce factors (1.10 and 1.50 in
+	// the two CSVs); without any active rule, both serve 200.
+	idA, idB := findDifferingCorrelationIDs(t, srv.URL)
+	if got := decideRouterFactor(t, srv.URL, idA); got.factor != 1.10 && got.factor != 1.50 {
+		t.Fatalf("baseline idA factor = %v, want 1.10 or 1.50", got.factor)
+	}
+
+	// Tighten via admin: bound max=1.30 vetoes the 1.50 route but
+	// allows the 1.10 route.
+	adminResp, err := http.Post(srv.URL+"/admin/guardrails", "application/json",
+		strings.NewReader(`{"factor_range":{"min":0.0,"max":1.30}}`))
+	if err != nil {
+		t.Fatalf("admin POST: %v", err)
+	}
+	adminResp.Body.Close()
+	if adminResp.StatusCode != http.StatusOK {
+		t.Fatalf("admin POST status = %d, want 200", adminResp.StatusCode)
+	}
+
+	// Post-admin: the 1.50 route now 500s; the 1.10 route still 200s.
+	// We check both IDs and assert at least one flipped to 500.
+	rawA := rawDecide(t, srv.URL, idA)
+	rawB := rawDecide(t, srv.URL, idB)
+	if rawA != 500 && rawB != 500 {
+		t.Errorf("neither route vetoed after admin tightening; statuses = %d, %d", rawA, rawB)
+	}
+	if rawA == 500 && rawB == 500 {
+		t.Errorf("both routes vetoed after max=1.30; one should still pass at 1.10")
+	}
+}
+
+// rawDecide returns the bare /decide status code for a given
+// correlation ID. Used when the test cares only about pass-vs-veto,
+// not the Decision body.
+func rawDecide(t *testing.T, baseURL, correlationID string) int {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, baseURL+"/decide",
+		strings.NewReader(`{"customer_tier":"enterprise"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Correlation-ID", correlationID)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("decide: %v", err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
 }
