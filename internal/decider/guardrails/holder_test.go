@@ -118,20 +118,54 @@ func TestHolderReplaceInputSliceMutationDoesNotLeakIn(t *testing.T) {
 	}
 }
 
-// TestHolderConcurrentDecideAndReplace exercises Decide and Replace
-// from many goroutines. The writer loops on Replace until every
-// reader has finished, so the writer is guaranteed to be running
-// while readers execute -- the test does not rely on scheduler
-// perturbation from -race to observe both configurations.
+// TestHolderReplaceSequentialObservability proves Replace actually
+// swaps the active rules and is observed by the next Decide. The
+// test is fully sequential -- no goroutines, no scheduler dependency
+// -- so it cannot flake. The race-free concurrent behavior is
+// covered separately by TestHolderConcurrentDecideAndReplaceRaceFree
+// below, which asserts only race-cleanliness, not observation
+// timing.
+func TestHolderReplaceSequentialObservability(t *testing.T) {
+	loose := []guardrails.Rule{guardrails.FactorRange{Min: 0.0, Max: 3.0}}
+	tight := []guardrails.Rule{guardrails.FactorRange{Min: 0.0, Max: 0.5}}
+
+	h := guardrails.NewHolder(loose...)
+	d := h.Wrap(stubDecider{decision: markup.Decision{MarkupFactor: 1.5}})
+
+	// 1.5 in [0, 3] -- passes.
+	if _, err := d.Decide(context.Background(), markup.Request{}); err != nil {
+		t.Fatalf("pre-Replace Decide returned error: %v", err)
+	}
+
+	// Tighten -- next Decide must observe the new bounds.
+	h.Replace(tight)
+	if _, err := d.Decide(context.Background(), markup.Request{}); !errors.Is(err, guardrails.ErrGuardrailViolation) {
+		t.Fatalf("post-tight Decide err = %v, want ErrGuardrailViolation", err)
+	}
+
+	// Loosen again -- next Decide must observe the relaxed bounds.
+	h.Replace(loose)
+	if _, err := d.Decide(context.Background(), markup.Request{}); err != nil {
+		t.Fatalf("post-loose Decide returned error: %v", err)
+	}
+}
+
+// TestHolderConcurrentDecideAndReplaceRaceFree exercises Decide and
+// Replace from many goroutines simultaneously. The test runs under
+// -race; its job is to surface any data race or deadlock in the
+// minimum-lock-hold pattern. The test does NOT assert that both
+// configurations were observed in the read stream -- that's the
+// scheduler's prerogative, not a correctness invariant. Replace's
+// observability is pinned by TestHolderReplaceSequentialObservability
+// above, which is fully deterministic.
 //
 // Test passes when:
-//   - every Decide returns a result consistent with EITHER configuration
-//     (never a torn state)
-//   - both configurations were observed (passes>0 AND vetoes>0)
-//   - the writer completed at least one full alternation pair while
-//     readers were running
+//   - no Decide returns an unclassified error (only nil or wrapped sentinel)
 //   - no data race is reported under -race; no deadlock
-func TestHolderConcurrentDecideAndReplace(t *testing.T) {
+//   - the writer completed at least one Replace while readers ran
+//     (otherwise the test would not actually be exercising the
+//     concurrent path)
+func TestHolderConcurrentDecideAndReplaceRaceFree(t *testing.T) {
 	const (
 		readers       = 16
 		decidesPerRdr = 1000
@@ -140,12 +174,8 @@ func TestHolderConcurrentDecideAndReplace(t *testing.T) {
 	tight := []guardrails.Rule{guardrails.FactorRange{Min: 0.0, Max: 0.5}}
 
 	h := guardrails.NewHolder(loose...)
-	// Inner returns a Decision with MarkupFactor 1.5: passes loose,
-	// fails tight. The Decide result classifies which configuration
-	// each reader observed.
 	d := h.Wrap(stubDecider{decision: markup.Decision{MarkupFactor: 1.5}})
 
-	var passes, vetoes int64
 	stop := make(chan struct{})
 	var readersWG, writerWG sync.WaitGroup
 
@@ -155,12 +185,7 @@ func TestHolderConcurrentDecideAndReplace(t *testing.T) {
 			defer readersWG.Done()
 			for i := 0; i < decidesPerRdr; i++ {
 				_, err := d.Decide(context.Background(), markup.Request{})
-				switch {
-				case err == nil:
-					atomic.AddInt64(&passes, 1)
-				case errors.Is(err, guardrails.ErrGuardrailViolation):
-					atomic.AddInt64(&vetoes, 1)
-				default:
+				if err != nil && !errors.Is(err, guardrails.ErrGuardrailViolation) {
 					t.Errorf("unexpected error: %v", err)
 					return
 				}
@@ -172,18 +197,20 @@ func TestHolderConcurrentDecideAndReplace(t *testing.T) {
 	writerWG.Add(1)
 	go func() {
 		defer writerWG.Done()
+		i := int64(0)
 		for {
 			select {
 			case <-stop:
 				return
 			default:
 			}
-			if writes%2 == 0 {
+			if i%2 == 0 {
 				h.Replace(tight)
 			} else {
 				h.Replace(loose)
 			}
-			atomic.AddInt64(&writes, 1)
+			i++
+			atomic.StoreInt64(&writes, i)
 		}
 	}()
 
@@ -191,27 +218,11 @@ func TestHolderConcurrentDecideAndReplace(t *testing.T) {
 	close(stop)
 	writerWG.Wait()
 
-	// Both configurations have to have been observed during the run.
-	// All-pass means Replace(tight) never took effect; all-veto means
-	// Replace(loose) never took effect or the initial loose configuration
-	// was never observed.
-	if passes == 0 {
-		t.Error("no Decide ever observed the loose configuration; Replace might be a no-op")
-	}
-	if vetoes == 0 {
-		t.Error("no Decide ever observed the tight configuration; reader never raced with writer")
-	}
-	if passes+vetoes != int64(readers*decidesPerRdr) {
-		t.Errorf("passes+vetoes = %d, want %d (some Decides returned an unclassified error)",
-			passes+vetoes, readers*decidesPerRdr)
-	}
-	// Writer should have completed at least one full alternation pair
-	// (Replace(tight) followed by Replace(loose)) during the readers'
-	// run; an extremely fast machine that finishes all reader iterations
-	// before the writer's first cycle would skip both branches and the
-	// passes>0 / vetoes>0 asserts above would already catch it.
-	if writes < 2 {
-		t.Errorf("writer completed %d Replace calls; want >= 2", writes)
+	// The writer keeps replacing until the readers finish, so at
+	// least one Replace had to happen during the readers' run -- if
+	// not, the test isn't exercising the concurrent path at all.
+	if atomic.LoadInt64(&writes) == 0 {
+		t.Error("writer completed zero Replace calls; concurrent path not exercised")
 	}
 }
 
