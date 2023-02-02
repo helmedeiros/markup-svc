@@ -54,6 +54,7 @@ Every capability the project set out to demonstrate against the [bre-go](https:/
 | Metrics port + decorator (`observability/metrics`) | `internal/observability/metrics` (library-only; operators wire their own `Sink`) | ✅ |
 | A/B routing + multi-model | `internal/decider/router` + `--route` + `--policy` | ✅ |
 | Guardrails (veto Decisions outside a configured safety envelope) | `internal/decider/guardrails` + `--min-factor` / `--max-factor` / `--allowed-countries` / `--required-fields` | ✅ |
+| Guardrails hot-reload via POST /admin/guardrails | `internal/decider/guardrails.Holder` + `internal/httpapi.GuardrailsAdmin` + `--guardrails-admin` | ✅ |
 | Compiled binary snapshot (`engine/indexed.CompiledSnapshot`) | not yet wired; the JSON snapshot is the v0.1.0 format | ⏳ deferred to its own ADR |
 
 ## Architecture
