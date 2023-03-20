@@ -7,6 +7,20 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.5] - 2023-03-20
+
+Patch release closing the gap between the OTel span decorator (ADR-0009) and an actually-exporting tracer. `--otel-enabled` on a published markup-svc binary now produces spans visible in an OTLP-compatible collector (OTel Collector, Jaeger native OTLP, Tempo, etc.) without a wrapper main. Closes pricing-observability ADR-0002's expectation that the platform-canonical image works against its OTel Collector + Jaeger stack out of the box.
+
+### Added
+
+- `internal/observability/otel.Bootstrap(ctx, instrumentationName)`: constructs an OTLP gRPC exporter, builds a `sdktrace.TracerProvider` with batched export and detected resource, sets it as the global `otel.TracerProvider`, returns the named tracer + a `Shutdown` cleanup function. Reads the standard OTel SDK env vars (`OTEL_EXPORTER_OTLP_ENDPOINT` default `localhost:4317`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`, etc.). `cmd/markup-server` calls Bootstrap when `--otel-enabled` is set and defers Shutdown with a 5s timeout for clean span flush at process exit.
+- ADR-0016 (Accepted): bootstrap the OTel SDK for `--otel-enabled`. Two design questions answered: in-binary bootstrap vs wrapper-main (pick in-binary so the published image is the trace-emitting binary the platform cookbook claims it is); gRPC vs HTTP/protobuf exporter (pick gRPC for per-`Decide` cost; HTTP wrapper-main path documented).
+- Dependencies: `go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.11.2` + `otlptracegrpc v1.11.2`, transitively `google.golang.org/grpc v1.51.0` + `google.golang.org/protobuf v1.28.1`.
+
+### Changed
+
+- `--otel-enabled` flag now produces a working SDK-bootstrapped TracerProvider when set; previously it set up the API-level tracer against the global NoopTracerProvider so spans dropped on the floor. The flag's behaviour is now what the ADR-0009 cookbook recipe always claimed.
+
 ## [0.1.4] - 2023-02-03
 
 Hot-reload for the guardrails decorator. The boot-time flags from `v0.1.3` stay unchanged; this release adds an admin endpoint so operators can replace the active rule set without restarting the process. The classic 2-AM tightening (a misbehaving rule set produces a Decision that needs to be vetoed *now*) no longer requires waiting for a rolling restart.

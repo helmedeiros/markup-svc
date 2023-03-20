@@ -21,7 +21,6 @@ import (
 	"syscall"
 	"time"
 
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/helmedeiros/markup-svc/internal/decider/firstmatch"
@@ -89,7 +88,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	var tracer trace.Tracer
 	if *otelEnabled {
-		tracer = otel.Tracer("github.com/helmedeiros/markup-svc/cmd/markup-server")
+		t, shutdown, err := mkotel.Bootstrap(ctx, "github.com/helmedeiros/markup-svc/cmd/markup-server")
+		if err != nil {
+			return fmt.Errorf("otel bootstrap: %w", err)
+		}
+		tracer = t
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = shutdown(shutdownCtx)
+		}()
 	}
 
 	var (
