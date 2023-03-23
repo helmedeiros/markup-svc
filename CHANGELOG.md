@@ -7,6 +7,29 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.6] - 2023-03-23
+
+Multi-layer Decide span release. markup-svc becomes a W3C trace context consumer: the `Bootstrap` from v0.1.5 now also sets the global TextMapPropagator to TraceContext + Baggage, the new `WithTraceContext` HTTP middleware extracts incoming `traceparent` on every request, and the Decide handler invocations land as children of the upstream caller's span instead of starting new traces. The cmd Decider wiring layers two new spans around the existing `markup.decider.decide` span: `markup.engine.evaluate` wraps the engine adapter, `markup.guardrails.check` wraps the guardrails decorator (when guardrails are active). Operators reading Jaeger see the three (or four, when guardrails are on) nested spans whose durations break the per-component cost down for bottleneck investigation. Closes ADR-0017.
+
+### Added
+
+- `internal/httpapi/tracecontext.go`: `WithTraceContext(next http.Handler) http.Handler`. Extracts W3C trace context from the request headers and writes it onto `r.Context()`. Safe to mount unconditionally — when `--otel-enabled` is off the global propagator is the no-op and the middleware is a ~50 ns pass-through. Composition: `WithCorrelationID(WithTraceContext(mux))` so the correlation ID is in context when the span starts.
+- Two new span layers in the cmd Decider wiring:
+  - `markup.engine.evaluate` wraps the engine adapter (or the router's holder for multi-route deployments). Inner span; emits whenever `--otel-enabled` is set.
+  - `markup.guardrails.check` wraps the guardrails decorator. Middle span; emits ONLY when guardrails are active (the binary has any of `--allowed-countries`, `--required-fields`, `--min-factor`, `--max-factor`, or `--guardrails-admin` set).
+- ADR-0017 (Accepted): incoming W3C trace context + multi-layer Decide spans. Three design questions answered: per-handler Extract vs middleware (pick middleware; cross-route consistency), single-span vs three-layer model (pick three layers; per-component cost visibility is the bottleneck-investigation win), in-package span emission vs wiring-layer wrap (pick wiring layer; reuses the existing `mkotel.Wrap` machinery and keeps engine + guardrails packages OTel-free).
+
+### Changed
+
+- `Bootstrap` (in `internal/observability/otel/bootstrap.go`) now sets the global TextMapPropagator to `propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})`. Previously the propagator stayed at the SDK no-op so incoming `traceparent` was ignored; `--otel-enabled` produced root spans only. Closes the trace-stitching gap that left gateway traces + markup-svc traces in different trace IDs.
+- `--otel-enabled` flag help text updated to name the three span layers and the W3C trace context behavior so `--help` is accurate.
+- `cmd/markup-server/main.go` composition order changes to `WithCorrelationID(WithTraceContext(mux))`; the Decider wiring in `wireTracedHandler` + `wireRouterHandler` adds the engine + guardrails span wraps inline.
+- `cmd/markup-server/main_otel_test.go` E2E expectations updated for the new 2-span-per-Decide shape (no-guardrails path: `markup.engine.evaluate` + `markup.decider.decide`).
+
+### Performance impact
+
+`--otel-enabled` off: ~50 ns per request added (the WithTraceContext no-op). `--otel-enabled` on, no guardrails: ~350 ns per Decide (2 span open + close pairs + 2 SetAttributes + propagator Extract). `--otel-enabled` on, guardrails active: ~475 ns per Decide (3 spans + 3 SetAttributes + Extract). All below the engine's noise floor (typical inmemory eval 20-100 µs).
+
 ## [0.1.5] - 2023-03-20
 
 Patch release closing the gap between the OTel span decorator (ADR-0009) and an actually-exporting tracer. `--otel-enabled` on a published markup-svc binary now produces spans visible in an OTLP-compatible collector (OTel Collector, Jaeger native OTLP, Tempo, etc.) without a wrapper main. Closes pricing-observability ADR-0002's expectation that the platform-canonical image works against its OTel Collector + Jaeger stack out of the box.

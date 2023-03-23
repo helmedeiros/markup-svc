@@ -56,12 +56,24 @@ func TestE2EOTelSpansEmittedOverHTTP(t *testing.T) {
 	}
 
 	spans := rec.Ended()
-	if len(spans) != 1 {
-		t.Fatalf("len(spans) = %d, want 1", len(spans))
+	// ADR-0017 changed the span model: per Decide call the binary
+	// emits two spans (no guardrails active in this test): the inner
+	// markup.engine.evaluate (child) and the outer markup.decider.decide
+	// (parent). Both carry the rule.markup.* attribute set; the test
+	// asserts on the outer span which is what operators key dashboards
+	// off historically.
+	if len(spans) != 2 {
+		t.Fatalf("len(spans) = %d, want 2 (engine.evaluate + decider.decide)", len(spans))
 	}
-	got := spans[0]
+	var got = spans[0]
+	for _, s := range spans {
+		if s.Name() == "markup.decider.decide" {
+			got = s
+			break
+		}
+	}
 	if got.Name() != "markup.decider.decide" {
-		t.Errorf("span name = %q, want \"markup.decider.decide\"", got.Name())
+		t.Errorf("did not find markup.decider.decide span; got names = %v", spanNames(spans))
 	}
 	attrs := got.Attributes()
 	if v, ok := findAttr(attrs, mkotel.AttrAdapter); !ok || v.AsString() != "*inmemory.Engine" {
@@ -119,14 +131,35 @@ func TestE2EOTelSpansContinueAfterReload(t *testing.T) {
 	must200(t, srv.URL+"/decide", `{"customer_tier":"enterprise"}`)
 
 	spans := rec.Ended()
-	if len(spans) != 2 {
-		t.Fatalf("len(spans) = %d, want 2 (one pre-reload, one post-reload)", len(spans))
+	// Per ADR-0017 each /decide emits two spans (no guardrails active
+	// in this test): markup.engine.evaluate + markup.decider.decide.
+	// Two /decide calls = four spans; assert the per-call pair shape.
+	if len(spans) != 4 {
+		t.Fatalf("len(spans) = %d, want 4 (two /decide x two spans each)", len(spans))
 	}
-	for i, s := range spans {
-		if s.Name() != "markup.decider.decide" {
-			t.Errorf("span[%d] name = %q, want \"markup.decider.decide\"", i, s.Name())
+	deciderCount := 0
+	engineCount := 0
+	for _, s := range spans {
+		switch s.Name() {
+		case "markup.decider.decide":
+			deciderCount++
+		case "markup.engine.evaluate":
+			engineCount++
+		default:
+			t.Errorf("unexpected span name %q", s.Name())
 		}
 	}
+	if deciderCount != 2 || engineCount != 2 {
+		t.Errorf("span name counts: decider=%d engine=%d, want 2/2", deciderCount, engineCount)
+	}
+}
+
+func spanNames(spans []sdktrace.ReadOnlySpan) []string {
+	out := make([]string, len(spans))
+	for i, s := range spans {
+		out[i] = s.Name()
+	}
+	return out
 }
 
 func TestWireHandlerWithoutTracerProducesNoSpans(t *testing.T) {

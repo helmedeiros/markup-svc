@@ -57,7 +57,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	listen := fs.String("listen", ":8080", "HTTP listen address")
 	modelVersion := fs.String("model", "v1", "model version tag carried on every Decision (overridden by snapshot's ModelVersion when --snapshot is set)")
 	adapter := fs.String("adapter", "inmemory", "Decider adapter: inmemory|firstmatch|priority|indexed (ignored when --snapshot is set; snapshots are indexed-only)")
-	otelEnabled := fs.Bool("otel-enabled", false, "wrap Decide calls in OpenTelemetry spans (see ADR-0009); spans emit via the no-op tracer unless an exporter is configured via OTel SDK env vars")
+	otelEnabled := fs.Bool("otel-enabled", false, "bootstrap the OTel SDK + emit three-layer Decide spans (markup.decider.decide / markup.guardrails.check / markup.engine.evaluate) and accept incoming W3C traceparent so spans join the caller's trace; reads OTEL_EXPORTER_OTLP_ENDPOINT etc. per the OTel SDK conventions (see ADR-0009, ADR-0016, ADR-0017)")
 	var routeSpecs routeFlagList
 	fs.Var(&routeSpecs, "route", "repeatable; format: model:variant:type:path where type is rules|snapshot. When set, mutually exclusive with --rules/--snapshot. See ADR-0011.")
 	policyName := fs.String("policy", "hash-correlation", "routing policy when multiple --route flags are set: hash-correlation|default")
@@ -279,8 +279,14 @@ func (r *routeFlagList) Set(v string) error {
 // and POSTs return 404. See ADR-0011's follow-up commit.
 func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHolder, gw guardrailsWire) http.Handler {
 	var decideDecider markup.Decider = r
+	if tracer != nil {
+		decideDecider = mkotel.Wrap(decideDecider, tracer, mkotel.WithSpanName("markup.engine.evaluate"))
+	}
 	if gw.wrap != nil {
 		decideDecider = gw.wrap(decideDecider)
+		if tracer != nil {
+			decideDecider = mkotel.Wrap(decideDecider, tracer, mkotel.WithSpanName("markup.guardrails.check"))
+		}
 	}
 	if tracer != nil {
 		decideDecider = mkotel.Wrap(decideDecider, tracer)
@@ -296,7 +302,7 @@ func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHol
 	mux.Handle("/healthz", httpapi.Healthz())
 	mux.Handle("/readyz", httpapi.Readyz(isReady))
 	markReady()
-	return httpapi.WithCorrelationID(mux)
+	return httpapi.WithCorrelationID(httpapi.WithTraceContext(mux))
 }
 
 // routeHolder bundles a route's ModelVersion with its swap.Decider
@@ -437,8 +443,14 @@ func wireTracedHandler(loader httpapi.Loader, tracer trace.Tracer, gw guardrails
 	}
 	holder := swap.New(initial)
 	var decideDecider markup.Decider = holder
+	if tracer != nil {
+		decideDecider = mkotel.Wrap(decideDecider, tracer, mkotel.WithSpanName("markup.engine.evaluate"))
+	}
 	if gw.wrap != nil {
 		decideDecider = gw.wrap(decideDecider)
+		if tracer != nil {
+			decideDecider = mkotel.Wrap(decideDecider, tracer, mkotel.WithSpanName("markup.guardrails.check"))
+		}
 	}
 	if tracer != nil {
 		decideDecider = mkotel.Wrap(decideDecider, tracer)
@@ -452,7 +464,7 @@ func wireTracedHandler(loader httpapi.Loader, tracer trace.Tracer, gw guardrails
 	mux.Handle("/healthz", httpapi.Healthz())
 	mux.Handle("/readyz", httpapi.Readyz(isReady))
 	markReady()
-	return httpapi.WithCorrelationID(mux), result, nil
+	return httpapi.WithCorrelationID(httpapi.WithTraceContext(mux)), result, nil
 }
 
 // snapshotLoader is the boot-time-capturing loader for the --snapshot

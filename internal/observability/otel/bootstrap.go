@@ -7,6 +7,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
@@ -59,6 +60,21 @@ func Bootstrap(ctx context.Context, instrumentationName string) (trace.Tracer, S
 	)
 
 	otel.SetTracerProvider(tp)
+
+	// The global TextMapPropagator drives header-based trace context
+	// hopping. ADR-0017 makes markup-svc a trace-context CONSUMER:
+	// the httpapi.Decide handler extracts incoming W3C traceparent
+	// so the markup.decider.decide span becomes a child of whatever
+	// emitted the request (decision-gateway in the platform compose).
+	// markup-svc does not call any outbound HTTP services from the
+	// hot path so the Inject side of the propagator is unused, but
+	// setting the propagator unconditionally keeps the global state
+	// consistent with the platform's other services (decision-gateway
+	// + traffic-gen) and lets future outbound calls inherit it.
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	))
 
 	return tp.Tracer(instrumentationName), tp.Shutdown, nil
 }

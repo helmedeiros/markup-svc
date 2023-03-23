@@ -35,3 +35,4 @@ NNNN-short-decision-name.md
 | [0014](0014-guardrails.md) | Guardrails decorator at the Decider port | ✅ Accepted |
 | [0015](0015-guardrails-hot-reload.md) | Hot-reload guardrails via POST /admin/guardrails | ✅ Accepted |
 | [0016](0016-otel-sdk-bootstrap.md) | Bootstrap the OTel SDK for --otel-enabled | ✅ Accepted |
+| [0017](0017-incoming-trace-context-multi-layer-spans.md) | Incoming W3C trace context + multi-layer Decide spans | ✅ Accepted |
