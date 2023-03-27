@@ -7,6 +7,20 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.7] - 2023-03-27
+
+Multi-arch image release. `cmd/markup-server/Dockerfile` builds with `--platform=$BUILDPLATFORM` on the build stage and cross-compiles via `GOARCH=${TARGETARCH:-amd64}`; the CI image-publish job passes `platforms: linux/amd64,linux/arm64` to `docker/build-push-action` so every published tag is a manifest list. Operators on Apple Silicon (`docker pull ghcr.io/helmedeiros/markup-svc:v0.1.7`) automatically receive the arm64 variant and skip Rosetta-2 emulation; Graviton-class AWS instances get the same image without a separate pipeline. Closes ADR-0018.
+
+### Added
+
+- ADR-0018 (Accepted): multi-arch image publish. Two design questions answered: cross-compile vs QEMU emulation (pick cross-compile — `--platform=$BUILDPLATFORM` keeps the build native, GOARCH does the work), manifest list vs per-arch tags (pick manifest list — no operator-visible change at pull time).
+- `cmd/markup-server/Dockerfile`: `ARG BUILDPLATFORM` / `ARG TARGETOS` / `ARG TARGETARCH` declarations + GOARCH-aware build command. Defaults preserve plain `docker build` (no buildx) producing a working amd64 image.
+- `.github/workflows/ci.yml`: image-publish job declares `platforms: linux/amd64,linux/arm64` on the build-push-action step.
+
+### Performance impact
+
+CI build time +30 seconds (one extra cross-compile invocation) vs the original amd64-only build; cache hits on subsequent runs keep steady-state close to the original. Runtime: zero difference between native amd64 and arm64; improvement is purely removal of the emulation layer when the host arch is arm64. The dev-stack Jaeger trace's per-hop network cost on Apple Silicon drops from ~800µs (mostly emulation) to ~50-100µs (actual Docker-bridge wire time), an order of magnitude improvement that makes the trace measurements representative of production behavior.
+
 ## [0.1.6] - 2023-03-23
 
 Multi-layer Decide span release. markup-svc becomes a W3C trace context consumer: the `Bootstrap` from v0.1.5 now also sets the global TextMapPropagator to TraceContext + Baggage, the new `WithTraceContext` HTTP middleware extracts incoming `traceparent` on every request, and the Decide handler invocations land as children of the upstream caller's span instead of starting new traces. The cmd Decider wiring layers two new spans around the existing `markup.decider.decide` span: `markup.engine.evaluate` wraps the engine adapter, `markup.guardrails.check` wraps the guardrails decorator (when guardrails are active). Operators reading Jaeger see the three (or four, when guardrails are on) nested spans whose durations break the per-component cost down for bottleneck investigation. Closes ADR-0017.

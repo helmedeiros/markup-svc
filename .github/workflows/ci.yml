@@ -116,6 +116,12 @@ jobs:
         with:
           context: .
           file: cmd/markup-server/Dockerfile
+          # Multi-arch manifest list. amd64 = the runner's native arch
+          # (no emulation in go build because the Dockerfile pins
+          # --platform=$BUILDPLATFORM on the build stage and
+          # cross-compiles via GOARCH). arm64 = Apple Silicon dev boxes
+          # + Graviton production. See ADR-0018.
+          platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) }}
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha

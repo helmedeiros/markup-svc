@@ -36,3 +36,4 @@ NNNN-short-decision-name.md
 | [0015](0015-guardrails-hot-reload.md) | Hot-reload guardrails via POST /admin/guardrails | ✅ Accepted |
 | [0016](0016-otel-sdk-bootstrap.md) | Bootstrap the OTel SDK for --otel-enabled | ✅ Accepted |
 | [0017](0017-incoming-trace-context-multi-layer-spans.md) | Incoming W3C trace context + multi-layer Decide spans | ✅ Accepted |
+| [0018](0018-multi-arch-images.md) | Multi-arch (linux/amd64 + linux/arm64) image publish | ✅ Accepted |
