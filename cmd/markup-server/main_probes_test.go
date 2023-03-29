@@ -103,7 +103,7 @@ func TestE2EProbesMountedInRouterModeToo(t *testing.T) {
 		t.Fatalf("buildRoutes: %v", err)
 	}
 	policy, _ := pickRouterPolicy("hash-correlation")
-	srv := httptest.NewServer(wireRouterHandler(router.New(routes, policy), nil, holders, guardrailsWire{}))
+	srv := httptest.NewServer(wireRouterHandler(router.New(routes, policy), nil, holders, guardrailsWire{}, metricsWiring{}))
 	t.Cleanup(srv.Close)
 
 	for _, path := range []string{"/healthz", "/readyz"} {

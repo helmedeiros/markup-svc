@@ -7,6 +7,27 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.8] - 2023-03-29
+
+Metrics phase release. Closes the wrapper-main gap that ADR-0010 left for the metrics decorator: the published `markup-svc:v0.1.8` binary exposes Prometheus exposition at `/metrics` when `--metrics-enabled` is set, with no operator-side derivation required. Pricing-observability's deferred-from-v0.0.1 metrics phase consumes this endpoint. Closes ADR-0019.
+
+### Added
+
+- `internal/observability/metrics/prom`: new subpackage. `prom.New() (*Sink, http.Handler)` constructs a private `prometheus.Registry`, registers a `markup_decide_total` counter + `markup_decide_duration_seconds` histogram (both labeled by `adapter` / `model_version` / `outcome`), and returns the Sink + a `promhttp.HandlerFor(reg)` against the same registry. The Sink implements the existing `metrics.Sink` port from ADR-0010 with no contract changes there.
+- `cmd/markup-server` flag `--metrics-enabled`. When set, the cmd wires `prom.New()` into a new private `metricsWiring` struct passed through both `wireRouterHandler` and `wireTracedHandler` (matching the existing `guardrailsWire` pattern). The metrics decorator wraps the Decider OUTERMOST per ADR-0010's recommended order so `Duration` captures end-to-end Decider cost including tracing overhead.
+- `/metrics` HTTP route mounted on the same listener as `/decide` when the flag is set.
+- ADR-0019 (Accepted): Prometheus Sink + /metrics endpoint. Three design questions answered: bundle Sink + handler vs return separately (pick bundle — one call, no operator-side `promhttp.HandlerFor` wiring); labels (pick adapter + model_version + outcome — low-cardinality dimensions, ~120 series total, rule + correlation_id stay in Jaeger); histogram buckets (pick `prometheus.DefBuckets` — consistent with Prometheus ecosystem, custom sub-ms buckets land as follow-up when dashboard motivates).
+
+### Dependencies
+
+- `github.com/prometheus/client_golang v1.14.0` (the version line compatible with Go 1.18). Transitive: `github.com/prometheus/common`, `github.com/prometheus/client_model`, `github.com/prometheus/procfs`, `github.com/cespare/xxhash/v2`, `github.com/golang/protobuf`, `github.com/matttproud/golang_protobuf_extensions`.
+
+### Performance impact
+
+`--metrics-enabled` off: zero ns delta vs v0.1.7. The decorator is not wrapped; the `/metrics` route is not mounted; no Prometheus code is reached.
+
+`--metrics-enabled` on: ~50-200 ns per Decide added (one `time.Now()` + `time.Since()` from the metrics decorator + one labels-map allocation + one atomic Inc + one atomic histogram Observe). Below the engine's noise floor (10-100 µs on inmemory). The `/metrics` scrape itself runs only on the Prometheus scrape interval (default 15s) and serializes ~120 series in ~100 µs.
+
 ## [0.1.7] - 2023-03-27
 
 Multi-arch image release. `cmd/markup-server/Dockerfile` builds with `--platform=$BUILDPLATFORM` on the build stage and cross-compiles via `GOARCH=${TARGETARCH:-amd64}`; the CI image-publish job passes `platforms: linux/amd64,linux/arm64` to `docker/build-push-action` so every published tag is a manifest list. Operators on Apple Silicon (`docker pull ghcr.io/helmedeiros/markup-svc:v0.1.7`) automatically receive the arm64 variant and skip Rosetta-2 emulation; Graviton-class AWS instances get the same image without a separate pipeline. Closes ADR-0018.

@@ -33,6 +33,8 @@ import (
 	"github.com/helmedeiros/markup-svc/internal/httpapi"
 	"github.com/helmedeiros/markup-svc/internal/load"
 	"github.com/helmedeiros/markup-svc/internal/markup"
+	mkmetrics "github.com/helmedeiros/markup-svc/internal/observability/metrics"
+	mkprom "github.com/helmedeiros/markup-svc/internal/observability/metrics/prom"
 	mkotel "github.com/helmedeiros/markup-svc/internal/observability/otel"
 	"github.com/helmedeiros/markup-svc/internal/snapshot"
 )
@@ -58,6 +60,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	modelVersion := fs.String("model", "v1", "model version tag carried on every Decision (overridden by snapshot's ModelVersion when --snapshot is set)")
 	adapter := fs.String("adapter", "inmemory", "Decider adapter: inmemory|firstmatch|priority|indexed (ignored when --snapshot is set; snapshots are indexed-only)")
 	otelEnabled := fs.Bool("otel-enabled", false, "bootstrap the OTel SDK + emit three-layer Decide spans (markup.decider.decide / markup.guardrails.check / markup.engine.evaluate) and accept incoming W3C traceparent so spans join the caller's trace; reads OTEL_EXPORTER_OTLP_ENDPOINT etc. per the OTel SDK conventions (see ADR-0009, ADR-0016, ADR-0017)")
+	metricsEnabled := fs.Bool("metrics-enabled", false, "wrap Decide with the metrics decorator (ADR-0010) writing to a Prometheus Sink + mount /metrics on the same listener for scraping (see ADR-0019)")
 	var routeSpecs routeFlagList
 	fs.Var(&routeSpecs, "route", "repeatable; format: model:variant:type:path where type is rules|snapshot. When set, mutually exclusive with --rules/--snapshot. See ADR-0011.")
 	policyName := fs.String("policy", "hash-correlation", "routing policy when multiple --route flags are set: hash-correlation|default")
@@ -100,6 +103,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}()
 	}
 
+	var metricsWire metricsWiring
+	if *metricsEnabled {
+		sink, h := mkprom.New()
+		metricsWire = metricsWiring{sink: sink, handler: h}
+	}
+
 	var (
 		handler     http.Handler
 		ruleCount   int
@@ -116,7 +125,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if perr != nil {
 			return perr
 		}
-		handler = wireRouterHandler(router.New(routes, policy), tracer, holders, guardWiring)
+		handler = wireRouterHandler(router.New(routes, policy), tracer, holders, guardWiring, metricsWire)
 		ruleCount = total
 		bootSource = fmt.Sprintf("%d routes (policy=%s)", len(routes), *policyName)
 		bootAdapter = "router"
@@ -132,7 +141,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			bootSource = *rulesPath
 			bootAdapter = *adapter
 		}
-		h, initialResult, err := wireTracedHandler(loader, tracer, guardWiring)
+		h, initialResult, err := wireTracedHandler(loader, tracer, guardWiring, metricsWire)
 		if err != nil {
 			return err
 		}
@@ -205,7 +214,17 @@ func isReady() (string, bool) {
 // http.Handler is the production wiring -- same shape used by
 // tests so they exercise the real seam.
 func wireHandler(loader httpapi.Loader) (http.Handler, httpapi.ReloadResult, error) {
-	return wireTracedHandler(loader, nil, guardrailsWire{})
+	return wireTracedHandler(loader, nil, guardrailsWire{}, metricsWiring{})
+}
+
+// metricsWiring bundles the optional Prometheus metrics decorator
+// + the matching /metrics HTTP handler. The zero value disables both:
+// the decorator is not wrapped and /metrics is not mounted. See
+// ADR-0019 in this repo + ADR-0003 in pricing-observability for the
+// scrape contract.
+type metricsWiring struct {
+	sink    mkmetrics.Sink
+	handler http.Handler
 }
 
 // guardrailsWire bundles the optional guardrails-decorator layer and
@@ -277,7 +296,7 @@ func (r *routeFlagList) Set(v string) error {
 // holder. When holders is nil (legacy callers that did not build
 // per-route reload infrastructure), /admin/reload is not mounted
 // and POSTs return 404. See ADR-0011's follow-up commit.
-func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHolder, gw guardrailsWire) http.Handler {
+func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHolder, gw guardrailsWire, mw metricsWiring) http.Handler {
 	var decideDecider markup.Decider = r
 	if tracer != nil {
 		decideDecider = mkotel.Wrap(decideDecider, tracer, mkotel.WithSpanName("markup.engine.evaluate"))
@@ -291,6 +310,12 @@ func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHol
 	if tracer != nil {
 		decideDecider = mkotel.Wrap(decideDecider, tracer)
 	}
+	// metrics decorator goes OUTERMOST so Duration captures the
+	// full stack including tracing overhead (per ADR-0010's
+	// recommended order).
+	if mw.sink != nil {
+		decideDecider = mkmetrics.Wrap(decideDecider, mw.sink)
+	}
 	mux := http.NewServeMux()
 	mux.Handle("/decide", httpapi.Decide(decideDecider))
 	if len(holders) > 0 {
@@ -298,6 +323,9 @@ func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHol
 	}
 	if gw.mountAdmin != nil {
 		gw.mountAdmin(mux)
+	}
+	if mw.handler != nil {
+		mux.Handle("/metrics", mw.handler)
 	}
 	mux.Handle("/healthz", httpapi.Healthz())
 	mux.Handle("/readyz", httpapi.Readyz(isReady))
@@ -436,7 +464,7 @@ func buildRoutes(specs routeFlagList, stderr io.Writer) ([]router.Route, []route
 // holder's inner still flows through the traced layer and continues
 // emitting spans. The /admin/reload route keeps calling holder.Swap
 // directly -- swaps are administrative, not user traffic.
-func wireTracedHandler(loader httpapi.Loader, tracer trace.Tracer, gw guardrailsWire) (http.Handler, httpapi.ReloadResult, error) {
+func wireTracedHandler(loader httpapi.Loader, tracer trace.Tracer, gw guardrailsWire, mw metricsWiring) (http.Handler, httpapi.ReloadResult, error) {
 	initial, result, err := loader()
 	if err != nil {
 		return nil, httpapi.ReloadResult{}, err
@@ -455,11 +483,17 @@ func wireTracedHandler(loader httpapi.Loader, tracer trace.Tracer, gw guardrails
 	if tracer != nil {
 		decideDecider = mkotel.Wrap(decideDecider, tracer)
 	}
+	if mw.sink != nil {
+		decideDecider = mkmetrics.Wrap(decideDecider, mw.sink)
+	}
 	mux := http.NewServeMux()
 	mux.Handle("/decide", httpapi.Decide(decideDecider))
 	mux.Handle("/admin/reload", httpapi.Reload(holder, loader))
 	if gw.mountAdmin != nil {
 		gw.mountAdmin(mux)
+	}
+	if mw.handler != nil {
+		mux.Handle("/metrics", mw.handler)
 	}
 	mux.Handle("/healthz", httpapi.Healthz())
 	mux.Handle("/readyz", httpapi.Readyz(isReady))
