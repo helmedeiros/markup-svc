@@ -7,6 +7,23 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.9] - 2023-03-31
+
+SpanKind=Server on the outermost `markup.decider.decide` span. Unlocks markup-svc in Jaeger's Monitor tab (Service Performance Monitoring): the previous all-Internal span tree was correctly skipped by Jaeger's SPM aggregator (which filters to SERVER+CONSUMER), so the Monitor view rendered empty even when traffic was flowing. The inner `markup.guardrails.check` + `markup.engine.evaluate` spans correctly stay Internal — they're intra-process decorators, not service boundaries. Closes ADR-0020.
+
+### Added
+
+- `internal/observability/otel.WithSpanKind(trace.SpanKind)` Option on the existing `Wrap`. Matches the existing `WithSpanName` pattern; preserves the default (Internal) so all existing call sites' behavior is unchanged.
+- ADR-0020 (Accepted): SpanKind=Server on the outer Decide span. One design question answered: how to expose SpanKind on Wrap (pick Option pattern; matches `WithSpanName`, preserves backwards compatibility, minimal change-set).
+
+### Changed
+
+- `cmd/markup-server/main.go`: the outermost `mkotel.Wrap(...)` for `markup.decider.decide` now passes `WithSpanKind(trace.SpanKindServer)`. The inner two wraps keep their existing `WithSpanName(...)` only.
+
+### Operator-visible
+
+After deploying v0.1.9 with the live pricing-observability v0.0.5+ stack: Jaeger Monitor tab → service: markup-svc → RED panels populate (calls/min, error rate, p50/p95/p99 latency). Combined with decision-gateway + traffic-gen, all three platform services have working SPM out of the box.
+
 ## [0.1.8] - 2023-03-29
 
 Metrics phase release. Closes the wrapper-main gap that ADR-0010 left for the metrics decorator: the published `markup-svc:v0.1.8` binary exposes Prometheus exposition at `/metrics` when `--metrics-enabled` is set, with no operator-side derivation required. Pricing-observability's deferred-from-v0.0.1 metrics phase consumes this endpoint. Closes ADR-0019.

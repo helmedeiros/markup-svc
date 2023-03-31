@@ -38,3 +38,4 @@ NNNN-short-decision-name.md
 | [0017](0017-incoming-trace-context-multi-layer-spans.md) | Incoming W3C trace context + multi-layer Decide spans | ✅ Accepted |
 | [0018](0018-multi-arch-images.md) | Multi-arch (linux/amd64 + linux/arm64) image publish | ✅ Accepted |
 | [0019](0019-prometheus-metrics-sink.md) | Prometheus Sink + /metrics endpoint | ✅ Accepted |
+| [0020](0020-spankind-server-on-outer-decide.md) | SpanKind=Server on the outer markup.decider.decide span | ✅ Accepted |

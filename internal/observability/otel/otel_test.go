@@ -11,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	breengine "github.com/helmedeiros/bre-go/engine"
 
@@ -242,3 +243,31 @@ func TestWrapSpanIsObservableSynchronously(t *testing.T) {
 	}
 }
 
+
+func TestWrap_DefaultSpanKindInternal_OverrideToServer(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+	tracer := tp.Tracer("test")
+
+	defaultWrap := mkotel.Wrap(&stubDecider{decision: markup.Decision{Rule: "r"}}, tracer)
+	serverWrap := mkotel.Wrap(&stubDecider{decision: markup.Decision{Rule: "r"}}, tracer, mkotel.WithSpanKind(oteltrace.SpanKindServer))
+
+	if _, err := defaultWrap.Decide(context.Background(), markup.Request{}); err != nil {
+		t.Fatalf("default wrap Decide: %v", err)
+	}
+	if _, err := serverWrap.Decide(context.Background(), markup.Request{}); err != nil {
+		t.Fatalf("server wrap Decide: %v", err)
+	}
+
+	spans := rec.Ended()
+	if len(spans) != 2 {
+		t.Fatalf("len(spans) = %d, want 2", len(spans))
+	}
+	if got := spans[0].SpanKind(); got != oteltrace.SpanKindInternal {
+		t.Errorf("default span kind = %v, want Internal", got)
+	}
+	if got := spans[1].SpanKind(); got != oteltrace.SpanKindServer {
+		t.Errorf("WithSpanKind(Server) span kind = %v, want Server", got)
+	}
+}

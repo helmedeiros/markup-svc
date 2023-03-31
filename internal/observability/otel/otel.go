@@ -43,11 +43,20 @@ func WithSpanName(name string) Option {
 	return func(t *tracedDecider) { t.spanName = name }
 }
 
+// WithSpanKind overrides the default span kind (Internal). Set
+// trace.SpanKindServer on the outermost wrap so Jaeger's Monitor
+// tab (SPM) recognizes the span as a service entry for RED-metrics
+// aggregation. The inner engine + guardrails wraps stay Internal
+// because they are not service boundaries. See ADR-0020.
+func WithSpanKind(kind trace.SpanKind) Option {
+	return func(t *tracedDecider) { t.spanKind = kind }
+}
+
 // Wrap returns inner decorated with one OpenTelemetry span per Decide.
 // The returned value satisfies markup.Decider so it composes with
 // other Decider decorators (e.g., swap.Decider for hot reload).
 func Wrap(inner markup.Decider, tracer trace.Tracer, opts ...Option) markup.Decider {
-	t := &tracedDecider{inner: inner, tracer: tracer, spanName: defaultSpanName}
+	t := &tracedDecider{inner: inner, tracer: tracer, spanName: defaultSpanName, spanKind: trace.SpanKindInternal}
 	for _, opt := range opts {
 		opt(t)
 	}
@@ -58,12 +67,13 @@ type tracedDecider struct {
 	inner    markup.Decider
 	tracer   trace.Tracer
 	spanName string
+	spanKind trace.SpanKind
 }
 
 // Decide implements markup.Decider. See ADR-0009's per-outcome table
 // for the attribute set written on each branch.
 func (t *tracedDecider) Decide(ctx context.Context, req markup.Request) (markup.Decision, error) {
-	ctx, span := t.tracer.Start(ctx, t.spanName)
+	ctx, span := t.tracer.Start(ctx, t.spanName, trace.WithSpanKind(t.spanKind))
 	defer span.End()
 
 	cid := breengine.CorrelationIDFromContext(ctx)

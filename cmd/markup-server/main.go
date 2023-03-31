@@ -308,7 +308,7 @@ func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHol
 		}
 	}
 	if tracer != nil {
-		decideDecider = mkotel.Wrap(decideDecider, tracer)
+		decideDecider = mkotel.Wrap(decideDecider, tracer, mkotel.WithSpanKind(trace.SpanKindServer))
 	}
 	// metrics decorator goes OUTERMOST so Duration captures the
 	// full stack including tracing overhead (per ADR-0010's
@@ -481,7 +481,7 @@ func wireTracedHandler(loader httpapi.Loader, tracer trace.Tracer, gw guardrails
 		}
 	}
 	if tracer != nil {
-		decideDecider = mkotel.Wrap(decideDecider, tracer)
+		decideDecider = mkotel.Wrap(decideDecider, tracer, mkotel.WithSpanKind(trace.SpanKindServer))
 	}
 	if mw.sink != nil {
 		decideDecider = mkmetrics.Wrap(decideDecider, mw.sink)
