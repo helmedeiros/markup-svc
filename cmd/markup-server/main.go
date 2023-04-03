@@ -31,6 +31,7 @@ import (
 	"github.com/helmedeiros/markup-svc/internal/decider/router"
 	"github.com/helmedeiros/markup-svc/internal/decider/swap"
 	"github.com/helmedeiros/markup-svc/internal/httpapi"
+	"github.com/helmedeiros/markup-svc/internal/jsonlog"
 	"github.com/helmedeiros/markup-svc/internal/load"
 	"github.com/helmedeiros/markup-svc/internal/markup"
 	mkmetrics "github.com/helmedeiros/markup-svc/internal/observability/metrics"
@@ -109,6 +110,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		metricsWire = metricsWiring{sink: sink, handler: h}
 	}
 
+	log := jsonlog.New(stdout)
+
 	var (
 		handler     http.Handler
 		ruleCount   int
@@ -125,7 +128,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if perr != nil {
 			return perr
 		}
-		handler = wireRouterHandler(router.New(routes, policy), tracer, holders, guardWiring, metricsWire)
+		handler = wireRouterHandler(router.New(routes, policy), tracer, holders, guardWiring, metricsWire, log)
 		ruleCount = total
 		bootSource = fmt.Sprintf("%d routes (policy=%s)", len(routes), *policyName)
 		bootAdapter = "router"
@@ -141,7 +144,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			bootSource = *rulesPath
 			bootAdapter = *adapter
 		}
-		h, initialResult, err := wireTracedHandler(loader, tracer, guardWiring, metricsWire)
+		h, initialResult, err := wireTracedHandler(loader, tracer, guardWiring, metricsWire, log)
 		if err != nil {
 			return err
 		}
@@ -154,11 +157,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-
 	serverErr := make(chan error, 1)
 	go func() {
-		fmt.Fprintf(stdout, "markup-server: listening on %s (%d rules, model %s, adapter %s, source %s)\n",
-			*listen, ruleCount, bootModel, bootAdapter, bootSource)
+		log.Info("markup-server.boot", map[string]any{
+			"listen":  *listen,
+			"rules":   ruleCount,
+			"model":   bootModel,
+			"adapter": bootAdapter,
+			"source":  bootSource,
+		})
 		err := srv.ListenAndServe()
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- err
@@ -169,7 +176,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	select {
 	case <-ctx.Done():
-		fmt.Fprintln(stdout, "markup-server: shutting down")
+		log.Info("markup-server.shutdown", nil)
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
 		return srv.Shutdown(shutdownCtx)
@@ -214,7 +221,7 @@ func isReady() (string, bool) {
 // http.Handler is the production wiring -- same shape used by
 // tests so they exercise the real seam.
 func wireHandler(loader httpapi.Loader) (http.Handler, httpapi.ReloadResult, error) {
-	return wireTracedHandler(loader, nil, guardrailsWire{}, metricsWiring{})
+	return wireTracedHandler(loader, nil, guardrailsWire{}, metricsWiring{}, nil)
 }
 
 // metricsWiring bundles the optional Prometheus metrics decorator
@@ -296,7 +303,7 @@ func (r *routeFlagList) Set(v string) error {
 // holder. When holders is nil (legacy callers that did not build
 // per-route reload infrastructure), /admin/reload is not mounted
 // and POSTs return 404. See ADR-0011's follow-up commit.
-func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHolder, gw guardrailsWire, mw metricsWiring) http.Handler {
+func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHolder, gw guardrailsWire, mw metricsWiring, log *jsonlog.Logger) http.Handler {
 	var decideDecider markup.Decider = r
 	if tracer != nil {
 		decideDecider = mkotel.Wrap(decideDecider, tracer, mkotel.WithSpanName("markup.engine.evaluate"))
@@ -330,7 +337,7 @@ func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHol
 	mux.Handle("/healthz", httpapi.Healthz())
 	mux.Handle("/readyz", httpapi.Readyz(isReady))
 	markReady()
-	return httpapi.WithCorrelationID(httpapi.WithTraceContext(mux))
+	return httpapi.WithCorrelationID(httpapi.WithTraceContext(httpapi.WithAccessLog(log, mux)))
 }
 
 // routeHolder bundles a route's ModelVersion with its swap.Decider
@@ -464,7 +471,7 @@ func buildRoutes(specs routeFlagList, stderr io.Writer) ([]router.Route, []route
 // holder's inner still flows through the traced layer and continues
 // emitting spans. The /admin/reload route keeps calling holder.Swap
 // directly -- swaps are administrative, not user traffic.
-func wireTracedHandler(loader httpapi.Loader, tracer trace.Tracer, gw guardrailsWire, mw metricsWiring) (http.Handler, httpapi.ReloadResult, error) {
+func wireTracedHandler(loader httpapi.Loader, tracer trace.Tracer, gw guardrailsWire, mw metricsWiring, log *jsonlog.Logger) (http.Handler, httpapi.ReloadResult, error) {
 	initial, result, err := loader()
 	if err != nil {
 		return nil, httpapi.ReloadResult{}, err
@@ -498,7 +505,7 @@ func wireTracedHandler(loader httpapi.Loader, tracer trace.Tracer, gw guardrails
 	mux.Handle("/healthz", httpapi.Healthz())
 	mux.Handle("/readyz", httpapi.Readyz(isReady))
 	markReady()
-	return httpapi.WithCorrelationID(httpapi.WithTraceContext(mux)), result, nil
+	return httpapi.WithCorrelationID(httpapi.WithTraceContext(httpapi.WithAccessLog(log, mux))), result, nil
 }
 
 // snapshotLoader is the boot-time-capturing loader for the --snapshot

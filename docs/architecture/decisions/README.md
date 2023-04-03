@@ -39,3 +39,4 @@ NNNN-short-decision-name.md
 | [0018](0018-multi-arch-images.md) | Multi-arch (linux/amd64 + linux/arm64) image publish | ✅ Accepted |
 | [0019](0019-prometheus-metrics-sink.md) | Prometheus Sink + /metrics endpoint | ✅ Accepted |
 | [0020](0020-spankind-server-on-outer-decide.md) | SpanKind=Server on the outer markup.decider.decide span | ✅ Accepted |
+| [0021](0021-structured-json-logs.md) | Structured JSON logs (boot, access, shutdown) | ✅ Accepted |

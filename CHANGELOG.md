@@ -7,6 +7,22 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.10] - 2023-04-03
+
+Structured JSON logging. Closes the only remaining log-shape gap in the platform: markup-svc previously emitted plain text on stdout, Filebeat ingested it under `message` instead of `attrs.*`, Kibana queries on `attrs.correlation_id` worked for traffic-gen + decision-gateway but not markup-svc. v0.1.10 brings it to parity. Closes ADR-0021.
+
+### Added
+
+- `internal/jsonlog`: small thread-safe `Logger` emitting `{time, level, msg, attrs}` JSON lines.
+- `internal/httpapi.WithAccessLog`: middleware emitting one `markup-server.access` event per request with `method / path / status / duration_ms / correlation_id / trace_id / span_id` attrs (omitted when absent). Nil logger short-circuits to pass-through.
+- ADR-0021 (Accepted).
+
+### Changed
+
+- Boot line `markup-server: listening on ...` → `markup-server.boot` JSON event with attrs `{listen, rules, model, adapter, source}`.
+- Shutdown line → `markup-server.shutdown` event.
+- Composition order: `WithCorrelationID(WithTraceContext(WithAccessLog(log, mux)))` so the access middleware sees the correlation + trace context the outer middleware extracted.
+
 ## [0.1.9] - 2023-03-31
 
 SpanKind=Server on the outermost `markup.decider.decide` span. Unlocks markup-svc in Jaeger's Monitor tab (Service Performance Monitoring): the previous all-Internal span tree was correctly skipped by Jaeger's SPM aggregator (which filters to SERVER+CONSUMER), so the Monitor view rendered empty even when traffic was flowing. The inner `markup.guardrails.check` + `markup.engine.evaluate` spans correctly stay Internal — they're intra-process decorators, not service boundaries. Closes ADR-0020.

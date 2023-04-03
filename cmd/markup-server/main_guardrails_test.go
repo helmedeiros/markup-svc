@@ -108,7 +108,7 @@ func newGuardedE2EServer(t *testing.T, rules ...guardrails.Rule) *httptest.Serve
 	t.Helper()
 	loader := rulesLoader("testdata/rules.csv", "inmemory", "v0-e2e", io.Discard)
 	gw := buildGuardrailsWiring(false, rules, io.Discard)
-	handler, _, err := wireTracedHandler(loader, nil, gw, metricsWiring{})
+	handler, _, err := wireTracedHandler(loader, nil, gw, metricsWiring{}, nil)
 	if err != nil {
 		t.Fatalf("wireTracedHandler: %v", err)
 	}
@@ -192,7 +192,7 @@ func newAdminGuardedE2EServer(t *testing.T, rules ...guardrails.Rule) *httptest.
 	t.Helper()
 	loader := rulesLoader("testdata/rules.csv", "inmemory", "v0-e2e", io.Discard)
 	gw := buildGuardrailsWiring(true, rules, io.Discard)
-	handler, _, err := wireTracedHandler(loader, nil, gw, metricsWiring{})
+	handler, _, err := wireTracedHandler(loader, nil, gw, metricsWiring{}, nil)
 	if err != nil {
 		t.Fatalf("wireTracedHandler: %v", err)
 	}
