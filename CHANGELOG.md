@@ -7,6 +7,17 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.11] - 2023-04-05
+
+h2c on the server. The HTTP listener now handles HTTP/1.1 + HTTP/2-over-cleartext from the same port. HTTP/1.1 clients keep working unchanged; HTTP/2 clients (the gateway in its next release) get connection multiplexing — many in-flight requests share one TCP connection. Closes ADR-0022.
+
+### Added
+
+- `golang.org/x/net/http2` + `h2c` direct imports; the indirect `x/net` dep is bumped to `v0.8.0` (still Go-1.18-compatible).
+- `cmd/markup-server`: `http.Server.Handler` wrapped with `h2c.NewHandler(handler, &http2.Server{})`.
+- Smoke test asserting `resp.ProtoMajor == 2` against an `http2.Transport{AllowHTTP: true}` client.
+- ADR-0022.
+
 ## [0.1.10] - 2023-04-03
 
 Structured JSON logging. Closes the only remaining log-shape gap in the platform: markup-svc previously emitted plain text on stdout, Filebeat ingested it under `message` instead of `attrs.*`, Kibana queries on `attrs.correlation_id` worked for traffic-gen + decision-gateway but not markup-svc. v0.1.10 brings it to parity. Closes ADR-0021.

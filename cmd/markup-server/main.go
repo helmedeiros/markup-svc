@@ -37,6 +37,9 @@ import (
 	mkmetrics "github.com/helmedeiros/markup-svc/internal/observability/metrics"
 	mkprom "github.com/helmedeiros/markup-svc/internal/observability/metrics/prom"
 	mkotel "github.com/helmedeiros/markup-svc/internal/observability/otel"
+
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 	"github.com/helmedeiros/markup-svc/internal/snapshot"
 )
 
@@ -154,7 +157,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	srv := &http.Server{
 		Addr:              *listen,
-		Handler:           handler,
+		Handler:           h2c.NewHandler(handler, &http2.Server{}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	serverErr := make(chan error, 1)
