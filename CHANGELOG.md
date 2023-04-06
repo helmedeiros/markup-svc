@@ -7,6 +7,10 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.12] - 2023-04-06
+
+Patch. v0.1.11's image build failed because `go mod tidy` pulled `x/sys@v0.45.0` (requires Go 1.21) and `x/text@v0.37.0` transitively. The golang:1.18 base image in the Dockerfile rejected the resulting `go.mod`. Pinned `x/net@v0.8.0`, `x/sys@v0.6.0`, `x/text@v0.8.0` — all early-2023 versions compatible with Go 1.18. Source code unchanged from v0.1.11 (same h2c feature). The v0.1.12 image is the one operators should use.
+
 ## [0.1.11] - 2023-04-05
 
 h2c on the server. The HTTP listener now handles HTTP/1.1 + HTTP/2-over-cleartext from the same port. HTTP/1.1 clients keep working unchanged; HTTP/2 clients (the gateway in its next release) get connection multiplexing — many in-flight requests share one TCP connection. Closes ADR-0022.
