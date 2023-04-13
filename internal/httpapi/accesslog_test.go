@@ -1,4 +1,4 @@
-package httpapi_test
+package httpapi
 
 import (
 	"bytes"
@@ -7,14 +7,14 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/helmedeiros/markup-svc/internal/httpapi"
 	"github.com/helmedeiros/markup-svc/internal/jsonlog"
+	"github.com/helmedeiros/markup-svc/internal/markup"
 )
 
 func TestWithAccessLog_EmitsExpectedAttrs(t *testing.T) {
 	var buf bytes.Buffer
 	l := jsonlog.New(&buf)
-	h := httpapi.WithAccessLog(l, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	h := WithAccessLog(l, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	}))
 
@@ -40,9 +40,81 @@ func TestWithAccessLog_EmitsExpectedAttrs(t *testing.T) {
 	}
 }
 
+func TestWithAccessLog_EnrichesWithRuleAndInputAndOutput(t *testing.T) {
+	var buf bytes.Buffer
+	l := jsonlog.New(&buf)
+	// Inner handler: simulate what httpapi.Decide does -- set the
+	// decision-context on the request before responding.
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req := markup.Request{
+			ProductID:    "p-1",
+			CustomerTier: "enterprise",
+			Country:      "DE",
+		}
+		dec := markup.Decision{
+			Rule:          "enterprise",
+			MarkupFactor:  1.15,
+			ModelVersion:  "v1",
+			EngineAdapter: "*inmemory.Engine",
+		}
+		// Mirror the Decide handler's *r = *r.WithContext(...) trick
+		// so middleware further out can read the value.
+		*r = *r.WithContext(withDecisionContext(r.Context(), decisionLogEntry{request: req, decision: dec}))
+		w.WriteHeader(http.StatusOK)
+	})
+	h := WithAccessLog(l, inner)
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/decide", nil))
+
+	var got map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	attrs := got["attrs"].(map[string]any)
+	if attrs["rule"] != "enterprise" {
+		t.Errorf("rule = %v", attrs["rule"])
+	}
+	if attrs["markup_factor"].(float64) != 1.15 {
+		t.Errorf("markup_factor = %v", attrs["markup_factor"])
+	}
+	if attrs["model_version"] != "v1" {
+		t.Errorf("model_version = %v", attrs["model_version"])
+	}
+	if attrs["engine_adapter"] != "*inmemory.Engine" {
+		t.Errorf("engine_adapter = %v", attrs["engine_adapter"])
+	}
+	input := attrs["input"].(map[string]any)
+	if input["product_id"] != "p-1" || input["customer_tier"] != "enterprise" || input["country"] != "DE" {
+		t.Errorf("input = %v", input)
+	}
+}
+
+func TestWithAccessLog_NoMatchSetsNoMatchTrue(t *testing.T) {
+	var buf bytes.Buffer
+	l := jsonlog.New(&buf)
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req := markup.Request{Country: "ZZ"}
+		*r = *r.WithContext(withDecisionContext(r.Context(), decisionLogEntry{request: req, noMatch: true}))
+		w.WriteHeader(http.StatusNotFound)
+	})
+	WithAccessLog(l, inner).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/decide", nil))
+
+	var got map[string]any
+	_ = json.Unmarshal(buf.Bytes(), &got)
+	attrs := got["attrs"].(map[string]any)
+	if attrs["no_match"] != true {
+		t.Errorf("no_match = %v", attrs["no_match"])
+	}
+	if _, has := attrs["rule"]; has {
+		t.Errorf("rule should be absent on no_match; got %v", attrs["rule"])
+	}
+	if attrs["input"].(map[string]any)["country"] != "ZZ" {
+		t.Errorf("input not propagated on no_match: %v", attrs["input"])
+	}
+}
+
 func TestWithAccessLog_NilLoggerIsPassThrough(t *testing.T) {
 	called := false
-	h := httpapi.WithAccessLog(nil, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	h := WithAccessLog(nil, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	}))

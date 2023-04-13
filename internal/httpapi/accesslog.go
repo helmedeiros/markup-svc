@@ -9,6 +9,7 @@ import (
 	breengine "github.com/helmedeiros/bre-go/engine"
 
 	"github.com/helmedeiros/markup-svc/internal/jsonlog"
+	"github.com/helmedeiros/markup-svc/internal/markup"
 )
 
 // WithAccessLog returns middleware that emits one JSON event per
@@ -35,8 +36,51 @@ func WithAccessLog(l *jsonlog.Logger, next http.Handler) http.Handler {
 			attrs["trace_id"] = sc.TraceID().String()
 			attrs["span_id"] = sc.SpanID().String()
 		}
+		if d, ok := decisionFromContext(r.Context()); ok {
+			attrs["input"] = inputFields(d.request)
+			if d.noMatch {
+				attrs["no_match"] = true
+			} else {
+				attrs["rule"] = d.decision.Rule
+				attrs["markup_factor"] = d.decision.MarkupFactor
+				attrs["model_version"] = d.decision.ModelVersion
+				if d.decision.Experiment != "" {
+					attrs["experiment"] = d.decision.Experiment
+				}
+				attrs["engine_adapter"] = d.decision.EngineAdapter
+			}
+		}
 		l.Info("markup-server.access", attrs)
 	})
+}
+
+func inputFields(r markup.Request) map[string]any {
+	out := map[string]any{}
+	if r.ProductID != "" {
+		out["product_id"] = r.ProductID
+	}
+	if r.Category != "" {
+		out["category"] = r.Category
+	}
+	if r.CustomerTier != "" {
+		out["customer_tier"] = r.CustomerTier
+	}
+	if r.Channel != "" {
+		out["channel"] = r.Channel
+	}
+	if r.Country != "" {
+		out["country"] = r.Country
+	}
+	if r.Inventory != "" {
+		out["inventory"] = r.Inventory
+	}
+	if r.TimeWindow != "" {
+		out["time_window"] = r.TimeWindow
+	}
+	if r.Amount != 0 {
+		out["amount"] = r.Amount
+	}
+	return out
 }
 
 type statusRecorder struct {

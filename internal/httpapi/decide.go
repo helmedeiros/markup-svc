@@ -76,15 +76,19 @@ func Decide(d markup.Decider) http.Handler {
 			writeError(w, http.StatusBadRequest, "malformed JSON body")
 			return
 		}
-		decision, err := d.Decide(r.Context(), dr.toMarkupRequest())
+		req := dr.toMarkupRequest()
+		decision, err := d.Decide(r.Context(), req)
+		ctx := r.Context()
 		if err != nil {
 			if errors.Is(err, markup.ErrNoMatch) {
+				*r = *r.WithContext(withDecisionContext(ctx, decisionLogEntry{request: req, noMatch: true}))
 				writeError(w, http.StatusNotFound, "no rule matched")
 				return
 			}
 			writeError(w, http.StatusInternalServerError, "internal")
 			return
 		}
+		*r = *r.WithContext(withDecisionContext(ctx, decisionLogEntry{request: req, decision: decision}))
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(fromDecision(decision))
 	})

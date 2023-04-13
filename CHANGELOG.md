@@ -7,6 +7,21 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.13] - 2023-04-13
+
+`markup-server.access` events now carry the matched rule, the input fields, and the rule output. Operators searching Kibana for "every request that matched `enterprise`" or "what inputs drove a 1.5 factor" no longer have to pivot to Jaeger. Closes ADR-0023.
+
+### Added
+
+- `attrs.rule`, `attrs.markup_factor`, `attrs.model_version`, `attrs.engine_adapter`, optional `attrs.experiment` on the access event when a rule matched.
+- `attrs.no_match: true` on the no-rule-matched path.
+- `attrs.input.*` with only the Request fields actually set (zero values omitted to keep events terse).
+- ADR-0023.
+
+### Changed
+
+- `httpapi.Decide` populates the request context with `{request, decision}` (or `no_match=true`) so `WithAccessLog` can merge them at the end of the frame.
+
 ## [0.1.12] - 2023-04-06
 
 Patch. v0.1.11's image build failed because `go mod tidy` pulled `x/sys@v0.45.0` (requires Go 1.21) and `x/text@v0.37.0` transitively. The golang:1.18 base image in the Dockerfile rejected the resulting `go.mod`. Pinned `x/net@v0.8.0`, `x/sys@v0.6.0`, `x/text@v0.8.0` — all early-2023 versions compatible with Go 1.18. Source code unchanged from v0.1.11 (same h2c feature). The v0.1.12 image is the one operators should use.

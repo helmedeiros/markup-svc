@@ -41,3 +41,4 @@ NNNN-short-decision-name.md
 | [0020](0020-spankind-server-on-outer-decide.md) | SpanKind=Server on the outer markup.decider.decide span | ✅ Accepted |
 | [0021](0021-structured-json-logs.md) | Structured JSON logs (boot, access, shutdown) | ✅ Accepted |
 | [0022](0022-h2c-server.md) | h2c (HTTP/2 cleartext) on the markup-svc server | ✅ Accepted |
+| [0023](0023-access-log-decision-fields.md) | Access log carries the matched rule, inputs, and outputs | ✅ Accepted |
