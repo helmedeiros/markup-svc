@@ -7,6 +7,14 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.14] - 2023-04-17
+
+`markup_decide_duration_seconds` switches from `prometheus.DefBuckets` (5 ms–10 s) to a 14-bucket sub-millisecond set covering 50 µs–1 s. Measured Decide latency lives in 10–100 µs; the default buckets put everything in the first bucket and the Grafana p50/p95/p99 panels rendered flat. Closes ADR-0024.
+
+### Changed
+
+- `internal/observability/metrics/prom`: histogram `Buckets` field uses a new `decideBuckets` slice.
+
 ## [0.1.13] - 2023-04-13
 
 `markup-server.access` events now carry the matched rule, the input fields, and the rule output. Operators searching Kibana for "every request that matched `enterprise`" or "what inputs drove a 1.5 factor" no longer have to pivot to Jaeger. Closes ADR-0023.

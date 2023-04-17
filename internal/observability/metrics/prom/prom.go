@@ -23,6 +23,15 @@ type Sink struct {
 	dur   *prometheus.HistogramVec
 }
 
+// decideBuckets covers the measured hot-path range (engine work
+// 10-100us, full Decider stack 17us-1ms median, tail to ~10ms).
+// prometheus.DefBuckets starts at 5ms and reads flat. See ADR-0024.
+var decideBuckets = []float64{
+	0.00005, 0.0001, 0.00025, 0.0005,
+	0.001, 0.0025, 0.005, 0.01,
+	0.025, 0.05, 0.1, 0.25, 0.5, 1,
+}
+
 // New constructs a Sink + the matching /metrics HTTP handler.
 // The Sink is registered against a private Registry; the handler
 // is built via promhttp.HandlerFor against the same Registry so
@@ -63,8 +72,8 @@ func New() (*Sink, http.Handler) {
 	dur := prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "markup_decide_duration_seconds",
-			Help:    "Markup-svc Decide latency in seconds labeled by adapter / model_version / outcome (ADR-0019).",
-			Buckets: prometheus.DefBuckets,
+			Help:    "Markup-svc Decide latency in seconds labeled by adapter / model_version / outcome (ADR-0019 + ADR-0024).",
+			Buckets: decideBuckets,
 		},
 		[]string{"adapter", "model_version", "outcome"},
 	)
