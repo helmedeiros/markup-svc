@@ -43,3 +43,4 @@ NNNN-short-decision-name.md
 | [0022](0022-h2c-server.md) | h2c (HTTP/2 cleartext) on the markup-svc server | ✅ Accepted |
 | [0023](0023-access-log-decision-fields.md) | Access log carries the matched rule, inputs, and outputs | ✅ Accepted |
 | [0024](0024-sub-ms-histogram-buckets.md) | Sub-millisecond histogram buckets for the Decide histogram | ✅ Accepted |
+| [0025](0025-diagnose-and-sentinels.md) | Diagnose() + port-level sentinels | ✅ Accepted |

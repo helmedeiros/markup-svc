@@ -65,6 +65,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	adapter := fs.String("adapter", "inmemory", "Decider adapter: inmemory|firstmatch|priority|indexed (ignored when --snapshot is set; snapshots are indexed-only)")
 	otelEnabled := fs.Bool("otel-enabled", false, "bootstrap the OTel SDK + emit three-layer Decide spans (markup.decider.decide / markup.guardrails.check / markup.engine.evaluate) and accept incoming W3C traceparent so spans join the caller's trace; reads OTEL_EXPORTER_OTLP_ENDPOINT etc. per the OTel SDK conventions (see ADR-0009, ADR-0016, ADR-0017)")
 	metricsEnabled := fs.Bool("metrics-enabled", false, "wrap Decide with the metrics decorator (ADR-0010) writing to a Prometheus Sink + mount /metrics on the same listener for scraping (see ADR-0019)")
+	diagnoseMode := fs.String("diagnose", "on", "rule-set diagnose mode at boot: on (fail boot on errors), warn (log issues + continue), off (skip). Mounts GET /admin/diagnose on the same listener. See ADR-0025.")
 	var routeSpecs routeFlagList
 	fs.Var(&routeSpecs, "route", "repeatable; format: model:variant:type:path where type is rules|snapshot. When set, mutually exclusive with --rules/--snapshot. See ADR-0011.")
 	policyName := fs.String("policy", "hash-correlation", "routing policy when multiple --route flags are set: hash-correlation|default")
@@ -115,6 +116,39 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	log := jsonlog.New(stdout)
 
+	var diagnoseFn httpapi.DiagnoseFn
+	if *rulesPath != "" {
+		rp := *rulesPath
+		diagnoseFn = func() (markup.Diagnosis, error) {
+			rules, err := loadRulesFromFile(rp)
+			if err != nil {
+				return markup.Diagnosis{}, err
+			}
+			return load.Diagnose(rules), nil
+		}
+		if *diagnoseMode != "off" {
+			d, derr := diagnoseFn()
+			if derr != nil {
+				return fmt.Errorf("diagnose: %w", derr)
+			}
+			for _, issue := range d.Issues {
+				attrs := map[string]any{"kind": string(issue.Kind), "detail": issue.Detail}
+				if issue.Rule != "" {
+					attrs["rule"] = issue.Rule
+				}
+				switch issue.Severity {
+				case markup.SeverityError:
+					log.Error("markup-server.diagnose", attrs)
+				case markup.SeverityWarning:
+					log.Warn("markup-server.diagnose", attrs)
+				}
+			}
+			if *diagnoseMode == "on" && !d.IsHealthy() {
+				return fmt.Errorf("diagnose: %d error issue(s) in rule set; fix or pass --diagnose=warn to start anyway", len(d.Errors()))
+			}
+		}
+	}
+
 	var (
 		handler     http.Handler
 		ruleCount   int
@@ -147,7 +181,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			bootSource = *rulesPath
 			bootAdapter = *adapter
 		}
-		h, initialResult, err := wireTracedHandler(loader, tracer, guardWiring, metricsWire, log)
+		h, initialResult, err := wireTracedHandler(loader, tracer, guardWiring, metricsWire, log, diagnoseFn)
 		if err != nil {
 			return err
 		}
@@ -224,7 +258,7 @@ func isReady() (string, bool) {
 // http.Handler is the production wiring -- same shape used by
 // tests so they exercise the real seam.
 func wireHandler(loader httpapi.Loader) (http.Handler, httpapi.ReloadResult, error) {
-	return wireTracedHandler(loader, nil, guardrailsWire{}, metricsWiring{}, nil)
+	return wireTracedHandler(loader, nil, guardrailsWire{}, metricsWiring{}, nil, nil)
 }
 
 // metricsWiring bundles the optional Prometheus metrics decorator
@@ -474,7 +508,7 @@ func buildRoutes(specs routeFlagList, stderr io.Writer) ([]router.Route, []route
 // holder's inner still flows through the traced layer and continues
 // emitting spans. The /admin/reload route keeps calling holder.Swap
 // directly -- swaps are administrative, not user traffic.
-func wireTracedHandler(loader httpapi.Loader, tracer trace.Tracer, gw guardrailsWire, mw metricsWiring, log *jsonlog.Logger) (http.Handler, httpapi.ReloadResult, error) {
+func wireTracedHandler(loader httpapi.Loader, tracer trace.Tracer, gw guardrailsWire, mw metricsWiring, log *jsonlog.Logger, diagnoseFn httpapi.DiagnoseFn) (http.Handler, httpapi.ReloadResult, error) {
 	initial, result, err := loader()
 	if err != nil {
 		return nil, httpapi.ReloadResult{}, err
@@ -499,6 +533,9 @@ func wireTracedHandler(loader httpapi.Loader, tracer trace.Tracer, gw guardrails
 	mux := http.NewServeMux()
 	mux.Handle("/decide", httpapi.Decide(decideDecider))
 	mux.Handle("/admin/reload", httpapi.Reload(holder, loader))
+	if diagnoseFn != nil {
+		mux.Handle("/admin/diagnose", httpapi.Diagnose(diagnoseFn))
+	}
 	if gw.mountAdmin != nil {
 		gw.mountAdmin(mux)
 	}

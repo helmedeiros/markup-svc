@@ -7,6 +7,22 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.15] - 2023-05-01
+
+`Diagnose()` + port-level sentinels. The bre-go capability matrix's two long-deferred startup-validation items ship together. Closes the "broken rule set silently returns ErrNoMatch for an hour before anyone notices" class of failure. Closes ADR-0025.
+
+### Added
+
+- `internal/markup`: `IssueKind` (six sentinels: `empty_rule_set`, `duplicate_name`, `duplicate_priority`, `invalid_factor`, `no_op_factor`, `empty_condition`), `Severity`, `Issue`, `Diagnosis` types with `Errors()` / `Warnings()` / `IsHealthy()`.
+- `internal/load.Diagnose([]Rule) markup.Diagnosis` — adapter-agnostic checks; same sentinel set regardless of which adapter loads the rules.
+- `internal/httpapi.Diagnose(fn DiagnoseFn) http.Handler` — `GET /admin/diagnose` returns the current Diagnosis as JSON with status 200 when healthy, 503 when not (curl-driven CI gates fail on a broken rule set without parsing the body).
+- `cmd --diagnose=on|warn|off` (default `on`): runs Diagnose at boot, fails on errors in `on` mode, logs all issues as `markup-server.diagnose` JSON events with severity → log-level mapping.
+- ADR-0025.
+
+### Changed
+
+- `wireTracedHandler` signature gains a `DiagnoseFn` parameter (nil in test paths).
+
 ## [0.1.14] - 2023-04-17
 
 `markup_decide_duration_seconds` switches from `prometheus.DefBuckets` (5 ms–10 s) to a 14-bucket sub-millisecond set covering 50 µs–1 s. Measured Decide latency lives in 10–100 µs; the default buckets put everything in the first bucket and the Grafana p50/p95/p99 panels rendered flat. Closes ADR-0024.
