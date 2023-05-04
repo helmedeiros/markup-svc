@@ -28,19 +28,49 @@ type reloadResponse struct {
 	ModelVersion string `json:"model_version"`
 }
 
+// ReloadOption customises Reload at construction time.
+type ReloadOption func(*reloadConfig)
+
+type reloadConfig struct {
+	gate DiagnoseFn
+}
+
+// WithReloadDiagnose gates the reload on Diagnose: if the new rules
+// fail diagnosis, the handler returns 400 + JSON of the issues and
+// the active Decider is NOT swapped. The currently-serving rules
+// keep handling /decide. See ADR-0026.
+func WithReloadDiagnose(fn DiagnoseFn) ReloadOption {
+	return func(c *reloadConfig) { c.gate = fn }
+}
+
 // Reload returns an http.Handler that, on POST, invokes loader() to
 // build a fresh Decider, atomically swaps it into holder via Swap,
 // and responds 200 with the new RuleCount + ModelVersion. Loader
 // errors map to 500 with an opaque body so the underlying error does
 // not leak into the response; the loader closure is expected to
 // surface details via stderr or the configured logger. Non-POST
-// returns 405 with Allow: POST per RFC 7231. See ADR-0008.
-func Reload(holder *swap.Decider, loader Loader) http.Handler {
+// returns 405 with Allow: POST per RFC 7231. See ADR-0008 + ADR-0026.
+func Reload(holder *swap.Decider, loader Loader, opts ...ReloadOption) http.Handler {
+	cfg := reloadConfig{}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
+		}
+		if cfg.gate != nil {
+			d, err := cfg.gate()
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "diagnose: "+err.Error())
+				return
+			}
+			if !d.IsHealthy() {
+				writeDiagnoseRejection(w, d)
+				return
+			}
 		}
 		decider, result, err := loader()
 		if err != nil {
@@ -51,4 +81,23 @@ func Reload(holder *swap.Decider, loader Loader) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(reloadResponse(result))
 	})
+}
+
+func writeDiagnoseRejection(w http.ResponseWriter, d markup.Diagnosis) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error":    "reload rejected: rule set failed Diagnose",
+		"healthy":  false,
+		"errors":   issuesToWire(d.Errors()),
+		"warnings": issuesToWire(d.Warnings()),
+	})
+}
+
+func issuesToWire(in []markup.Issue) []responseIssue {
+	out := make([]responseIssue, len(in))
+	for i, x := range in {
+		out[i] = responseIssue{Kind: x.Kind, Rule: x.Rule, Detail: x.Detail}
+	}
+	return out
 }

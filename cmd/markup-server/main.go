@@ -532,7 +532,11 @@ func wireTracedHandler(loader httpapi.Loader, tracer trace.Tracer, gw guardrails
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/decide", httpapi.Decide(decideDecider))
-	mux.Handle("/admin/reload", httpapi.Reload(holder, loader))
+	if diagnoseFn != nil {
+		mux.Handle("/admin/reload", httpapi.Reload(holder, loader, httpapi.WithReloadDiagnose(diagnoseFn)))
+	} else {
+		mux.Handle("/admin/reload", httpapi.Reload(holder, loader))
+	}
 	if diagnoseFn != nil {
 		mux.Handle("/admin/diagnose", httpapi.Diagnose(diagnoseFn))
 	}
