@@ -7,6 +7,25 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.16] - 2023-05-04
+
+`/admin/reload` is gated on Diagnose. A bad rule set posted via hot-reload no longer reaches customer traffic — the swap is rejected with 400 + JSON of the issues; the currently-serving rules stay active. Closes ADR-0026.
+
+### Added
+
+- `httpapi.ReloadOption` + `httpapi.WithReloadDiagnose(fn DiagnoseFn)` — options form on `Reload`. When set, runs `Diagnose` before the swap.
+- 400 response body shape on rejection: `{healthy: false, errors: [{kind, rule, detail}], warnings: [...]}`. Matches the `/admin/diagnose` GET shape so operators have one filter to remember.
+- ADR-0026.
+
+### Changed
+
+- `httpapi.Reload` signature gains a variadic `opts ...ReloadOption`. Backwards compatible — existing two-arg call sites continue to work unchanged.
+- cmd wires `WithReloadDiagnose(diagnoseFn)` when `--rules` mode is active.
+
+### K8s safety story
+
+Boot path (ADR-0025) and hot-reload path (this ADR) are now both fail-closed. A pod gone wrong via either path stays out of the customer's way — boot via `/readyz` not flipping ready, hot-reload via the 400 rejection keeping the old rules active.
+
 ## [0.1.15] - 2023-05-01
 
 `Diagnose()` + port-level sentinels. The bre-go capability matrix's two long-deferred startup-validation items ship together. Closes the "broken rule set silently returns ErrNoMatch for an hour before anyone notices" class of failure. Closes ADR-0025.
