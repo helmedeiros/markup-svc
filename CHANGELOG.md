@@ -7,6 +7,25 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.17] - 2023-05-19
+
+`/admin/reload` and `/admin/diagnose` return 400 (was 500) when the rules CSV is malformed. Closes ADR-0027.
+
+### Changed
+
+- `internal/markup`: new `InvalidRuleSetError` type wrapping `Path` + underlying `Err` via `Unwrap`.
+- `cmd/markup-server` `loadRulesFromFile`: wraps `load.FromCSV` failures with `&markup.InvalidRuleSetError{...}`. File-open failures stay as plain wrapped errors (5xx).
+- `internal/httpapi/reload.go` + `diagnose.go`: shared `statusForLoadErr(err)` dispatches via `errors.As`. `InvalidRuleSetError` → 400; everything else stays 500.
+- Existing E2E `TestE2EReloadFailureKeepsOldDecider` now asserts 400 with a reference to ADR-0027. Two new unit tests cover the explicit `InvalidRuleSetError` path on both endpoints.
+
+### Operator-visible
+
+A reload posted against a malformed CSV returns 400 with body `{"error":"reload failed"}`. The previously-loaded rules keep serving (same fail-closed posture as ADR-0026's Diagnose gate). Clients see "stop retrying" semantics.
+
+### Pairs with
+
+pricing-observability follow-up: `AdminHotReloadRejected` re-narrows from `status=~"[45].."` to `status=~"4.."` now that parser-error reloads return 400.
+
 ## [0.1.16] - 2023-05-04
 
 `/admin/reload` is gated on Diagnose. A bad rule set posted via hot-reload no longer reaches customer traffic — the swap is rejected with 400 + JSON of the issues; the currently-serving rules stay active. Closes ADR-0026.
