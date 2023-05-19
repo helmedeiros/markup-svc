@@ -121,3 +121,24 @@ func TestReloadRejectsNonPOSTWith405AndAllowHeader(t *testing.T) {
 		t.Error("loader must not be invoked on non-POST methods")
 	}
 }
+
+func TestReloadInvalidRuleSetReturns400(t *testing.T) {
+	initial := &stubDecider{decision: markup.Decision{Rule: "initial"}}
+	holder := swap.New(initial)
+	loader := loaderFailing(&markup.InvalidRuleSetError{
+		Path: "/etc/markup/rules.csv",
+		Err:  errors.New("row 2: condition: parser: expected =="),
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/reload", nil)
+	rec := httptest.NewRecorder()
+	httpapi.Reload(holder, loader).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (InvalidRuleSetError is caller-side)", rec.Code)
+	}
+	got, _ := holder.Decide(context.Background(), markup.Request{})
+	if got.Rule != "initial" {
+		t.Errorf("after 400 reload holder Rule = %q, want \"initial\" (no swap on rejected payload)", got.Rule)
+	}
+}

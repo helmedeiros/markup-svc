@@ -117,10 +117,10 @@ func TestE2EReloadFailureKeepsOldDecider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /admin/reload: %v", err)
 	}
-	if reloadResp.StatusCode != http.StatusInternalServerError {
+	if reloadResp.StatusCode != http.StatusBadRequest {
 		body, _ := io.ReadAll(reloadResp.Body)
 		reloadResp.Body.Close()
-		t.Fatalf("/admin/reload status = %d, want 500; body=%s", reloadResp.StatusCode, body)
+		t.Fatalf("/admin/reload status = %d, want 400 (ADR-0027 — InvalidRuleSetError is caller-side); body=%s", reloadResp.StatusCode, body)
 	}
 	reloadResp.Body.Close()
 

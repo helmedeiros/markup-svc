@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/helmedeiros/markup-svc/internal/decider/swap"
@@ -64,7 +65,7 @@ func Reload(holder *swap.Decider, loader Loader, opts ...ReloadOption) http.Hand
 		if cfg.gate != nil {
 			d, err := cfg.gate()
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, "diagnose: "+err.Error())
+				writeError(w, statusForLoadErr(err), "diagnose: "+err.Error())
 				return
 			}
 			if !d.IsHealthy() {
@@ -74,7 +75,7 @@ func Reload(holder *swap.Decider, loader Loader, opts ...ReloadOption) http.Hand
 		}
 		decider, result, err := loader()
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "reload failed")
+			writeError(w, statusForLoadErr(err), "reload failed")
 			return
 		}
 		holder.Swap(decider)
@@ -92,6 +93,14 @@ func writeDiagnoseRejection(w http.ResponseWriter, d markup.Diagnosis) {
 		"errors":   issuesToWire(d.Errors()),
 		"warnings": issuesToWire(d.Warnings()),
 	})
+}
+
+func statusForLoadErr(err error) int {
+	var ire *markup.InvalidRuleSetError
+	if errors.As(err, &ire) {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
 }
 
 func issuesToWire(in []markup.Issue) []responseIssue {

@@ -29,7 +29,7 @@ func Diagnose(fn DiagnoseFn) http.Handler {
 		}
 		d, err := fn()
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "diagnose: "+err.Error())
+			writeError(w, statusForLoadErr(err), "diagnose: "+err.Error())
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")

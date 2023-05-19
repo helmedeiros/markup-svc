@@ -230,7 +230,7 @@ func loadRulesFromFile(path string) ([]load.Rule, error) {
 	defer f.Close()
 	rules, err := load.FromCSV(f)
 	if err != nil {
-		return nil, fmt.Errorf("parse rules %q: %w", path, err)
+		return nil, &markup.InvalidRuleSetError{Path: path, Err: err}
 	}
 	return rules, nil
 }

@@ -2,6 +2,7 @@ package httpapi_test
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -51,5 +52,19 @@ func TestDiagnose_NonGetReturns405(t *testing.T) {
 	httpapi.Diagnose(fn).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/admin/diagnose", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", rec.Code)
+	}
+}
+
+func TestDiagnose_InvalidRuleSetReturns400(t *testing.T) {
+	fn := func() (markup.Diagnosis, error) {
+		return markup.Diagnosis{}, &markup.InvalidRuleSetError{
+			Path: "/etc/markup/rules.csv",
+			Err:  errors.New("row 2: condition: parser: expected =="),
+		}
+	}
+	rec := httptest.NewRecorder()
+	httpapi.Diagnose(fn).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin/diagnose", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (InvalidRuleSetError is caller-side)", rec.Code)
 	}
 }
