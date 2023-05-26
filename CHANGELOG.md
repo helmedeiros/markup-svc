@@ -7,6 +7,25 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.18] - 2023-05-26
+
+Admin handlers (`/admin/reload`, `/admin/diagnose`, `/admin/guardrails`) emit OTel SERVER spans so markup-svc shows up in admin trace waterfalls alongside `/decide`. Closes ADR-0028.
+
+### Added
+
+- `internal/httpapi/adminspan.go`: new `WithAdminSpan(tracer, spanName, next)` middleware. SpanKindServer; HTTP-semantic attributes (`http.method`, `http.target`, `http.status_code`); reuses `mkotel.AttrCorrelationID` from the existing OTel package. 5xx → span Error; 4xx stays OK per ADR-0027. tracer == nil is a no-op.
+- Six unit tests in `internal/httpapi/adminspan_test.go` covering span emit / status / 5xx error / 4xx OK / correlation_id stamp / nil tracer / parent-context propagation via `tracetest.SpanRecorder`.
+
+### Changed
+
+- `cmd/markup-server` wraps each admin handler (in both single-route and router modes) with `WithAdminSpan`. Span names: `markup.admin.reload`, `markup.admin.diagnose`, `markup.admin.guardrails`.
+- `guardrailsWire.mountAdmin` signature changes from `func(*http.ServeMux)` to `func(*http.ServeMux, func(http.Handler) http.Handler)` so the cmd can inject the span wrapper at mount time without `buildGuardrailsWiring` needing to know about the tracer.
+- `TestE2EOTelSpansContinueAfterReload` updated to expect 5 spans (was 4) including the new `markup.admin.reload`.
+
+### Operator-visible
+
+A page from `AdminHotReloadRejected` now produces a Jaeger trace with all three services (traffic-gen → decision-gateway → markup-svc) instead of ending at the gateway. The on-call sees markup-svc-side timing, the correlation_id, and the HTTP status code for the rejection.
+
 ## [0.1.17] - 2023-05-19
 
 `/admin/reload` and `/admin/diagnose` return 400 (was 500) when the rules CSV is malformed. Closes ADR-0027.

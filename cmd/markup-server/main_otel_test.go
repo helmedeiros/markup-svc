@@ -133,24 +133,28 @@ func TestE2EOTelSpansContinueAfterReload(t *testing.T) {
 	spans := rec.Ended()
 	// Per ADR-0017 each /decide emits two spans (no guardrails active
 	// in this test): markup.engine.evaluate + markup.decider.decide.
-	// Two /decide calls = four spans; assert the per-call pair shape.
-	if len(spans) != 4 {
-		t.Fatalf("len(spans) = %d, want 4 (two /decide x two spans each)", len(spans))
+	// Per ADR-0028 the /admin/reload POST emits markup.admin.reload.
+	// Two /decide calls (2x2 spans) + one admin/reload = 5 spans.
+	if len(spans) != 5 {
+		t.Fatalf("len(spans) = %d, want 5 (two /decide x two spans + one admin/reload)", len(spans))
 	}
 	deciderCount := 0
 	engineCount := 0
+	adminReloadCount := 0
 	for _, s := range spans {
 		switch s.Name() {
 		case "markup.decider.decide":
 			deciderCount++
 		case "markup.engine.evaluate":
 			engineCount++
+		case "markup.admin.reload":
+			adminReloadCount++
 		default:
 			t.Errorf("unexpected span name %q", s.Name())
 		}
 	}
-	if deciderCount != 2 || engineCount != 2 {
-		t.Errorf("span name counts: decider=%d engine=%d, want 2/2", deciderCount, engineCount)
+	if deciderCount != 2 || engineCount != 2 || adminReloadCount != 1 {
+		t.Errorf("span name counts: decider=%d engine=%d admin_reload=%d, want 2/2/1", deciderCount, engineCount, adminReloadCount)
 	}
 }
 

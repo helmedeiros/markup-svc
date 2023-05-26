@@ -46,3 +46,4 @@ NNNN-short-decision-name.md
 | [0025](0025-diagnose-and-sentinels.md) | Diagnose() + port-level sentinels | ✅ Accepted |
 | [0026](0026-reload-diagnose-gate.md) | /admin/reload is gated on Diagnose | ✅ Accepted |
 | [0027](0027-invalid-rule-set-400.md) | InvalidRuleSetError ↦ 400 on /admin/reload + /admin/diagnose | ✅ Accepted |
+| [0028](0028-admin-handler-otel-spans.md) | OTel spans on /admin/* handlers | ✅ Accepted |

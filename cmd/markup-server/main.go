@@ -285,7 +285,7 @@ type metricsWiring struct {
 // correlation-ID middleware).
 type guardrailsWire struct {
 	wrap       func(markup.Decider) markup.Decider
-	mountAdmin func(*http.ServeMux)
+	mountAdmin func(mux *http.ServeMux, wrap func(http.Handler) http.Handler)
 }
 
 // buildGuardrailsWiring picks the active guardrails mode from the
@@ -304,8 +304,12 @@ func buildGuardrailsWiring(adminEnabled bool, rules []guardrails.Rule, errLog io
 		holder := guardrails.NewHolder(rules...)
 		return guardrailsWire{
 			wrap: holder.Wrap,
-			mountAdmin: func(mux *http.ServeMux) {
-				mux.Handle("/admin/guardrails", httpapi.GuardrailsAdmin(holder, errLog))
+			mountAdmin: func(mux *http.ServeMux, wrap func(http.Handler) http.Handler) {
+				h := http.Handler(httpapi.GuardrailsAdmin(holder, errLog))
+				if wrap != nil {
+					h = wrap(h)
+				}
+				mux.Handle("/admin/guardrails", h)
 			},
 		}
 	}
@@ -363,10 +367,12 @@ func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHol
 	mux := http.NewServeMux()
 	mux.Handle("/decide", httpapi.Decide(decideDecider))
 	if len(holders) > 0 {
-		mux.Handle("/admin/reload", routeReloadHandler(holders))
+		mux.Handle("/admin/reload", httpapi.WithAdminSpan(tracer, "markup.admin.reload", routeReloadHandler(holders)))
 	}
 	if gw.mountAdmin != nil {
-		gw.mountAdmin(mux)
+		gw.mountAdmin(mux, func(h http.Handler) http.Handler {
+			return httpapi.WithAdminSpan(tracer, "markup.admin.guardrails", h)
+		})
 	}
 	if mw.handler != nil {
 		mux.Handle("/metrics", mw.handler)
@@ -532,16 +538,20 @@ func wireTracedHandler(loader httpapi.Loader, tracer trace.Tracer, gw guardrails
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/decide", httpapi.Decide(decideDecider))
+	var reloadH http.Handler
 	if diagnoseFn != nil {
-		mux.Handle("/admin/reload", httpapi.Reload(holder, loader, httpapi.WithReloadDiagnose(diagnoseFn)))
+		reloadH = httpapi.Reload(holder, loader, httpapi.WithReloadDiagnose(diagnoseFn))
 	} else {
-		mux.Handle("/admin/reload", httpapi.Reload(holder, loader))
+		reloadH = httpapi.Reload(holder, loader)
 	}
+	mux.Handle("/admin/reload", httpapi.WithAdminSpan(tracer, "markup.admin.reload", reloadH))
 	if diagnoseFn != nil {
-		mux.Handle("/admin/diagnose", httpapi.Diagnose(diagnoseFn))
+		mux.Handle("/admin/diagnose", httpapi.WithAdminSpan(tracer, "markup.admin.diagnose", httpapi.Diagnose(diagnoseFn)))
 	}
 	if gw.mountAdmin != nil {
-		gw.mountAdmin(mux)
+		gw.mountAdmin(mux, func(h http.Handler) http.Handler {
+			return httpapi.WithAdminSpan(tracer, "markup.admin.guardrails", h)
+		})
 	}
 	if mw.handler != nil {
 		mux.Handle("/metrics", mw.handler)
