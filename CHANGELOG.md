@@ -7,6 +7,27 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.19] - 2023-06-16
+
+Body-based `/admin/reload`. A control plane (or any HTTP client) can now push rule sets to running markup-svc instances by POSTing the new rules in the request body — no ConfigMap mutation, no kubelet sync window, no Kubernetes RBAC. Closes ADR-0030.
+
+### Added
+
+- `internal/httpapi.ReloadBodyLoader` interface (Supports + Load) and `WithReloadBodyLoader` option on the existing `Reload` handler. When the request body is non-empty AND the loader's Supports returns true for the request's normalized media type, the handler dispatches the body to the loader, runs format-appropriate validation, and swaps the Decider on success. Empty bodies, unrecognized media types, and absent body-loader configuration all fall through to the existing file-based path bit-for-bit unchanged.
+- `internal/httpapi.DiagnoseRejectedError` typed error so body-loader implementations can carry a Diagnose result back to the handler; the handler unwraps and reuses the existing `writeDiagnoseRejection` helper so the wire shape matches ADR-0026's file-path rejection exactly.
+- `cmd/markup-server.bodyLoader` struct implementing `ReloadBodyLoader`. Supports `text/csv` (parsed via `load.FromCSV`, Diagnose'd, built with the boot-time adapter) and `application/json` (parsed via `snapshot.Read`, loaded via `LoadIntoIndexedDecider`). Wired unconditionally so every binary built from this tag supports body-based reload when the request shape matches; no operator-facing flag.
+- 12 unit tests in `internal/httpapi/reload_body_test.go` covering happy paths, charset-normalization via `mime.ParseMediaType`, `InvalidRuleSetError` + `DiagnoseRejectedError` mappings, fall-through paths (empty body, no Content-Type, unrecognized Content-Type, no body-loader), the `BodyLoaderWired_EmptyBody_StillHitsFilePath` canary, and the 16 MB body cap returning 413.
+- `scientific/v0.1.19/` harness with three pre-registered benchmarks (`BenchmarkReload_EmptyBody`, `BenchmarkReload_CSVBody_100Rules`, `BenchmarkReload_CSVBody_10kRules`) and a REPORT.md committed alongside the code. Bars + pilot results in REPORT.md per the ADR-0012 protocol.
+
+### Changed
+
+- `cmd/markup-server.wireTracedHandler` signature gains a `ReloadBodyLoader` parameter (passed through from boot). `wireHandler` (test helper) passes nil. Existing wire callers in tests updated.
+- The /admin/reload handler's existing semantics — 405 on non-POST, 400 on Diagnose-unhealthy or InvalidRuleSetError, 500 on loader error, 200 with `ReloadResult` JSON on success — are preserved bit-for-bit on the file-based path. The body-based path uses the same status-code mapping.
+
+### Pairs with
+
+The control plane that operates this surface is a separate project; the data-plane contract in this release is what every consumer of body-based reload depends on. JSON snapshot path's Diagnose-skip is acknowledged as a security delta in ADR-0030's Not Closed; mitigated by the same network-level controls that protect the admin endpoint today.
+
 ## [0.1.18] - 2023-05-26
 
 Admin handlers (`/admin/reload`, `/admin/diagnose`, `/admin/guardrails`) emit OTel SERVER spans so markup-svc shows up in admin trace waterfalls alongside `/decide`. Closes ADR-0028.

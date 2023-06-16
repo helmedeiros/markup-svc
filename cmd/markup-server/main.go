@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -181,7 +182,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			bootSource = *rulesPath
 			bootAdapter = *adapter
 		}
-		h, initialResult, err := wireTracedHandler(loader, tracer, guardWiring, metricsWire, log, diagnoseFn)
+		body := newBodyLoader(bootAdapter, *modelVersion, stderr)
+		h, initialResult, err := wireTracedHandler(loader, body, tracer, guardWiring, metricsWire, log, diagnoseFn)
 		if err != nil {
 			return err
 		}
@@ -258,7 +260,7 @@ func isReady() (string, bool) {
 // http.Handler is the production wiring -- same shape used by
 // tests so they exercise the real seam.
 func wireHandler(loader httpapi.Loader) (http.Handler, httpapi.ReloadResult, error) {
-	return wireTracedHandler(loader, nil, guardrailsWire{}, metricsWiring{}, nil, nil)
+	return wireTracedHandler(loader, nil, nil, guardrailsWire{}, metricsWiring{}, nil, nil)
 }
 
 // metricsWiring bundles the optional Prometheus metrics decorator
@@ -514,7 +516,7 @@ func buildRoutes(specs routeFlagList, stderr io.Writer) ([]router.Route, []route
 // holder's inner still flows through the traced layer and continues
 // emitting spans. The /admin/reload route keeps calling holder.Swap
 // directly -- swaps are administrative, not user traffic.
-func wireTracedHandler(loader httpapi.Loader, tracer trace.Tracer, gw guardrailsWire, mw metricsWiring, log *jsonlog.Logger, diagnoseFn httpapi.DiagnoseFn) (http.Handler, httpapi.ReloadResult, error) {
+func wireTracedHandler(loader httpapi.Loader, body httpapi.ReloadBodyLoader, tracer trace.Tracer, gw guardrailsWire, mw metricsWiring, log *jsonlog.Logger, diagnoseFn httpapi.DiagnoseFn) (http.Handler, httpapi.ReloadResult, error) {
 	initial, result, err := loader()
 	if err != nil {
 		return nil, httpapi.ReloadResult{}, err
@@ -539,11 +541,14 @@ func wireTracedHandler(loader httpapi.Loader, tracer trace.Tracer, gw guardrails
 	mux := http.NewServeMux()
 	mux.Handle("/decide", httpapi.Decide(decideDecider))
 	var reloadH http.Handler
+	reloadOpts := []httpapi.ReloadOption{}
 	if diagnoseFn != nil {
-		reloadH = httpapi.Reload(holder, loader, httpapi.WithReloadDiagnose(diagnoseFn))
-	} else {
-		reloadH = httpapi.Reload(holder, loader)
+		reloadOpts = append(reloadOpts, httpapi.WithReloadDiagnose(diagnoseFn))
 	}
+	if body != nil {
+		reloadOpts = append(reloadOpts, httpapi.WithReloadBodyLoader(body))
+	}
+	reloadH = httpapi.Reload(holder, loader, reloadOpts...)
 	mux.Handle("/admin/reload", httpapi.WithAdminSpan(tracer, "markup.admin.reload", reloadH))
 	if diagnoseFn != nil {
 		mux.Handle("/admin/diagnose", httpapi.WithAdminSpan(tracer, "markup.admin.diagnose", httpapi.Diagnose(diagnoseFn)))
@@ -698,5 +703,59 @@ func buildDecider(adapter string, rules []load.Rule, modelVersion string) (marku
 		return indexed.NewFromRules(rules, modelVersion)
 	default:
 		return nil, fmt.Errorf("unknown adapter %q (want one of: inmemory, firstmatch, priority, indexed)", adapter)
+	}
+}
+
+// bodyLoader implements httpapi.ReloadBodyLoader for the cmd-side
+// integration. Supports recognizes text/csv (parsed via load.FromCSV,
+// Diagnose'd, then built with the boot-time adapter) and
+// application/json (parsed via snapshot.Read, loaded via
+// LoadIntoIndexedDecider). See ADR-0030.
+type bodyLoader struct {
+	adapter      string
+	modelVersion string
+	stderr       io.Writer
+}
+
+func newBodyLoader(adapter, modelVersion string, stderr io.Writer) *bodyLoader {
+	return &bodyLoader{adapter: adapter, modelVersion: modelVersion, stderr: stderr}
+}
+
+func (b *bodyLoader) Supports(mediaType string) bool {
+	return mediaType == "text/csv" || mediaType == "application/json"
+}
+
+func (b *bodyLoader) Load(mediaType string, body []byte) (markup.Decider, httpapi.ReloadResult, error) {
+	switch mediaType {
+	case "text/csv":
+		rules, err := load.FromCSV(bytes.NewReader(body))
+		if err != nil {
+			fmt.Fprintf(b.stderr, "body loader: parse csv body: %v\n", err)
+			return nil, httpapi.ReloadResult{}, &markup.InvalidRuleSetError{Path: "<body>", Err: err}
+		}
+		diag := load.Diagnose(rules)
+		if !diag.IsHealthy() {
+			return nil, httpapi.ReloadResult{}, &httpapi.DiagnoseRejectedError{Diagnosis: diag}
+		}
+		decider, err := buildDecider(b.adapter, rules, b.modelVersion)
+		if err != nil {
+			fmt.Fprintf(b.stderr, "body loader: build decider: %v\n", err)
+			return nil, httpapi.ReloadResult{}, fmt.Errorf("build decider: %w", err)
+		}
+		return decider, httpapi.ReloadResult{RuleCount: len(rules), ModelVersion: b.modelVersion}, nil
+	case "application/json":
+		snap, err := snapshot.Read(bytes.NewReader(body))
+		if err != nil {
+			fmt.Fprintf(b.stderr, "body loader: read snapshot body: %v\n", err)
+			return nil, httpapi.ReloadResult{}, &markup.InvalidRuleSetError{Path: "<body>", Err: err}
+		}
+		decider, err := snapshot.LoadIntoIndexedDecider(snap)
+		if err != nil {
+			fmt.Fprintf(b.stderr, "body loader: load snapshot: %v\n", err)
+			return nil, httpapi.ReloadResult{}, fmt.Errorf("load snapshot: %w", err)
+		}
+		return decider, httpapi.ReloadResult{RuleCount: len(snap.EngineSnapshot.Rules), ModelVersion: snap.ModelVersion}, nil
+	default:
+		return nil, httpapi.ReloadResult{}, fmt.Errorf("unsupported media type %q", mediaType)
 	}
 }
