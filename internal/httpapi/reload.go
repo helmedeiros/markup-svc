@@ -114,8 +114,9 @@ func Reload(holder *swap.Decider, loader Loader, opts ...ReloadOption) http.Hand
 			if mtErr == nil && cfg.bodyLoader.Supports(mediaType) {
 				body, readErr := io.ReadAll(http.MaxBytesReader(w, r.Body, defaultMaxBodyBytes))
 				if readErr != nil {
-					var mbe *http.MaxBytesError
-					if errors.As(readErr, &mbe) {
+					// Go 1.18 does not export http.MaxBytesError; the error
+					// message is stable across versions.
+					if readErr.Error() == "http: request body too large" {
 						writeError(w, http.StatusRequestEntityTooLarge, "request body exceeds limit")
 						return
 					}
