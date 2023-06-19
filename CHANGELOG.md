@@ -7,6 +7,10 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.20] - 2023-06-19
+
+CI fix. v0.1.19 used `http.MaxBytesError` which is Go 1.19+; the repo's Go baseline is 1.18. Switched to a string-equality check against the stable `"http: request body too large"` error message. Source semantics of v0.1.19 are otherwise unchanged.
+
 ## [0.1.19] - 2023-06-16
 
 Body-based `/admin/reload`. A control plane (or any HTTP client) can now push rule sets to running markup-svc instances by POSTing the new rules in the request body — no ConfigMap mutation, no kubelet sync window, no Kubernetes RBAC. Closes ADR-0030.
