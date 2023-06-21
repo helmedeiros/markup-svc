@@ -7,6 +7,18 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.21] - 2023-06-21
+
+CI fix for v0.1.19/v0.1.20 + completion of ADR-0030's test commitment.
+
+### Fixed
+
+- `internal/httpapi/reload_body_test.go` used `atomic.Int32` which is Go 1.19+. Switched to `atomic.AddInt32`/`atomic.LoadInt32` against an `int32` field to keep the repo's Go 1.18 baseline.
+
+### Added
+
+- The two cmd-level integration tests that ADR-0030 committed to but were missing from v0.1.19's commit: `TestE2EBootsWithBodyLoader_EmptyBodyReloadUnchanged` (bit-for-bit canary that wiring the body-loader does not change the empty-body file-path behaviour) and `TestE2EBodyBasedReload_CSVHappyPath` (POST-CSV-in-body → /decide returns new factor).
+
 ## [0.1.20] - 2023-06-19
 
 CI fix. v0.1.19 used `http.MaxBytesError` which is Go 1.19+; the repo's Go baseline is 1.18. Switched to a string-equality check against the stable `"http: request body too large"` error message. Source semantics of v0.1.19 are otherwise unchanged.

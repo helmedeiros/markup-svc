@@ -18,7 +18,7 @@ import (
 
 type spyBodyLoader struct {
 	supports map[string]bool
-	calls    atomic.Int32
+	calls    int32
 	lastCT   string
 	lastBody []byte
 	decider  markup.Decider
@@ -28,7 +28,7 @@ type spyBodyLoader struct {
 
 func (s *spyBodyLoader) Supports(ct string) bool { return s.supports[ct] }
 func (s *spyBodyLoader) Load(ct string, body []byte) (markup.Decider, httpapi.ReloadResult, error) {
-	s.calls.Add(1)
+	atomic.AddInt32(&s.calls, 1)
 	s.lastCT = ct
 	s.lastBody = body
 	return s.decider, s.result, s.err
@@ -39,7 +39,7 @@ func newSpyLoader() *spyBodyLoader {
 }
 
 type spyFileLoader struct {
-	calls   atomic.Int32
+	calls   int32
 	decider markup.Decider
 	result  httpapi.ReloadResult
 	err     error
@@ -47,7 +47,7 @@ type spyFileLoader struct {
 
 func (s *spyFileLoader) loader() httpapi.Loader {
 	return func() (markup.Decider, httpapi.ReloadResult, error) {
-		s.calls.Add(1)
+		atomic.AddInt32(&s.calls, 1)
 		return s.decider, s.result, s.err
 	}
 }
@@ -66,11 +66,11 @@ func TestReload_EmptyBody_FileBasedPath_Unchanged(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if body.calls.Load() != 0 {
-		t.Errorf("body-loader called %d times on empty-body POST, want 0", body.calls.Load())
+	if atomic.LoadInt32(&body.calls) != 0 {
+		t.Errorf("body-loader called %d times on empty-body POST, want 0", atomic.LoadInt32(&body.calls))
 	}
-	if fileSpy.calls.Load() != 1 {
-		t.Errorf("file-loader called %d times, want 1", fileSpy.calls.Load())
+	if atomic.LoadInt32(&fileSpy.calls) != 1 {
+		t.Errorf("file-loader called %d times, want 1", atomic.LoadInt32(&fileSpy.calls))
 	}
 }
 
@@ -87,11 +87,11 @@ func TestReload_BodyLoaderWired_EmptyBody_StillHitsFilePath(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if body.calls.Load() != 0 {
+	if atomic.LoadInt32(&body.calls) != 0 {
 		t.Errorf("body-loader called on empty-body POST, want 0")
 	}
-	if fileSpy.calls.Load() != 1 {
-		t.Errorf("file-loader call count = %d, want 1", fileSpy.calls.Load())
+	if atomic.LoadInt32(&fileSpy.calls) != 1 {
+		t.Errorf("file-loader call count = %d, want 1", atomic.LoadInt32(&fileSpy.calls))
 	}
 }
 
@@ -108,11 +108,11 @@ func TestReload_EmptyBody_RecognizedContentType_StillHitsFilePath(t *testing.T) 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if body.calls.Load() != 0 {
+	if atomic.LoadInt32(&body.calls) != 0 {
 		t.Errorf("body-loader called on empty-body POST with text/csv, want 0")
 	}
-	if fileSpy.calls.Load() != 1 {
-		t.Errorf("file-loader call count = %d, want 1", fileSpy.calls.Load())
+	if atomic.LoadInt32(&fileSpy.calls) != 1 {
+		t.Errorf("file-loader call count = %d, want 1", atomic.LoadInt32(&fileSpy.calls))
 	}
 }
 
@@ -141,10 +141,10 @@ func TestReload_TextCSV_HappyPath(t *testing.T) {
 	if v, _ := resp["model_version"].(string); v != "v9" {
 		t.Errorf("model_version = %v, want v9", v)
 	}
-	if body.calls.Load() != 1 {
-		t.Errorf("body-loader call count = %d, want 1", body.calls.Load())
+	if atomic.LoadInt32(&body.calls) != 1 {
+		t.Errorf("body-loader call count = %d, want 1", atomic.LoadInt32(&body.calls))
 	}
-	if fileSpy.calls.Load() != 0 {
+	if atomic.LoadInt32(&fileSpy.calls) != 0 {
 		t.Errorf("file-loader called on body-based path, want 0")
 	}
 	got, _ := holder.Decide(context.Background(), markup.Request{})
@@ -244,11 +244,11 @@ func TestReload_UnrecognizedContentType_FallsThrough(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if body.calls.Load() != 0 {
+	if atomic.LoadInt32(&body.calls) != 0 {
 		t.Errorf("body-loader called for unrecognized type, want 0")
 	}
-	if fileSpy.calls.Load() != 1 {
-		t.Errorf("file-loader call count = %d, want 1", fileSpy.calls.Load())
+	if atomic.LoadInt32(&fileSpy.calls) != 1 {
+		t.Errorf("file-loader call count = %d, want 1", atomic.LoadInt32(&fileSpy.calls))
 	}
 }
 
@@ -264,8 +264,8 @@ func TestReload_NoBodyLoader_FallsThrough(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if fileSpy.calls.Load() != 1 {
-		t.Errorf("file-loader call count = %d, want 1", fileSpy.calls.Load())
+	if atomic.LoadInt32(&fileSpy.calls) != 1 {
+		t.Errorf("file-loader call count = %d, want 1", atomic.LoadInt32(&fileSpy.calls))
 	}
 }
 
@@ -281,11 +281,11 @@ func TestReload_NoContentType_FallsThrough(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if body.calls.Load() != 0 {
+	if atomic.LoadInt32(&body.calls) != 0 {
 		t.Errorf("body-loader called with no Content-Type, want 0")
 	}
-	if fileSpy.calls.Load() != 1 {
-		t.Errorf("file-loader call count = %d, want 1", fileSpy.calls.Load())
+	if atomic.LoadInt32(&fileSpy.calls) != 1 {
+		t.Errorf("file-loader call count = %d, want 1", atomic.LoadInt32(&fileSpy.calls))
 	}
 }
 
