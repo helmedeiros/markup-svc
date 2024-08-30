@@ -21,6 +21,7 @@ type fakeShadowMetrics struct {
 	oneSidedChampion, oneSidedChallenger    int
 	sampledTrue, sampledFalse               int
 	deltas                                  []float64
+	durations                               []time.Duration
 }
 
 func (f *fakeShadowMetrics) RecordAgreement(agree bool) {
@@ -58,12 +59,18 @@ func (f *fakeShadowMetrics) RecordSampled(sampled bool) {
 		f.sampledFalse++
 	}
 }
+func (f *fakeShadowMetrics) RecordChallengerDuration(d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.durations = append(f.durations, d)
+}
 
 type metricsSnapshot struct {
 	agreeTrue, agreeFalse, timeouts, errors int
 	oneSidedChampion, oneSidedChallenger    int
 	sampledTrue, sampledFalse               int
 	deltas                                  []float64
+	durations                               []time.Duration
 }
 
 func (f *fakeShadowMetrics) snapshot() metricsSnapshot {
@@ -79,6 +86,7 @@ func (f *fakeShadowMetrics) snapshot() metricsSnapshot {
 		sampledTrue:         f.sampledTrue,
 		sampledFalse:        f.sampledFalse,
 		deltas:              append([]float64(nil), f.deltas...),
+		durations:           append([]time.Duration(nil), f.durations...),
 	}
 }
 
@@ -276,6 +284,22 @@ func TestDecide_SampleRateOneRunsEveryRequest(t *testing.T) {
 		h.ServeHTTP(rec, req)
 	}
 	waitFor(t, func() bool { return m.snapshot().sampledTrue == 3 && m.snapshot().agreeTrue == 3 })
+}
+
+func TestDecide_RecordsChallengerLatencyHistogram(t *testing.T) {
+	holder := shadow.New()
+	holder.Load(slowDecider{sleep: 5 * time.Millisecond})
+	m := &fakeShadowMetrics{}
+	h := httpapi.Decide(fixedDecider{factor: 1.2, rule: "alpha"},
+		httpapi.WithShadow(holder, m, 100*time.Millisecond, nil, 1.0))
+	req := httptest.NewRequest(http.MethodPost, "/decide", bytes.NewReader(decideBody()))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	waitFor(t, func() bool { return len(m.snapshot().durations) == 1 })
+	d := m.snapshot().durations[0]
+	if d < 4*time.Millisecond {
+		t.Fatalf("challenger duration %v too small; slowDecider sleeps 5ms", d)
+	}
 }
 
 func TestDecide_SampleRatePartialUsesDeterministicSampler(t *testing.T) {

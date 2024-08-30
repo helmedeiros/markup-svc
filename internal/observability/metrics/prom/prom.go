@@ -7,6 +7,7 @@ package prom
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -27,12 +28,13 @@ type Sink struct {
 // private registry as Sink so /metrics exposes Decide + shadow
 // counters from one scrape.
 type ShadowSink struct {
-	agreement   *prometheus.CounterVec
-	oneSided    *prometheus.CounterVec
-	timeouts    prometheus.Counter
-	errs        prometheus.Counter
-	factorDelta prometheus.Histogram
-	sampled     *prometheus.CounterVec
+	agreement      *prometheus.CounterVec
+	oneSided       *prometheus.CounterVec
+	timeouts       prometheus.Counter
+	errs           prometheus.Counter
+	factorDelta    prometheus.Histogram
+	sampled        *prometheus.CounterVec
+	duration       prometheus.Histogram
 }
 
 // RecordAgreement implements httpapi.ShadowMetrics.
@@ -63,6 +65,11 @@ func (s *ShadowSink) RecordSampled(sampled bool) {
 	} else {
 		s.sampled.WithLabelValues("false").Inc()
 	}
+}
+
+// RecordChallengerDuration implements httpapi.ShadowMetrics.
+func (s *ShadowSink) RecordChallengerDuration(d time.Duration) {
+	s.duration.Observe(d.Seconds())
 }
 
 // shadowFactorDeltaBuckets cover the realistic markup-factor delta
@@ -158,13 +165,19 @@ func New() (*Sink, *ShadowSink, http.Handler) {
 		},
 		[]string{"sampled"},
 	)
-	reg.MustRegister(count, dur, shadowAgree, shadowOneSided, shadowTimeouts, shadowErrs, shadowDelta, shadowSampled)
+	shadowDuration := prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "markup_challenger_decide_duration_seconds",
+		Help:    "Wall-clock cost of one challenger Decide call (ADR-0033 perf-measurement use case). Buckets match markup_decide_duration_seconds so champion / challenger latencies are directly comparable.",
+		Buckets: decideBuckets,
+	})
+	reg.MustRegister(count, dur, shadowAgree, shadowOneSided, shadowTimeouts, shadowErrs, shadowDelta, shadowSampled, shadowDuration)
 	handler := promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
 	return &Sink{count: count, dur: dur},
 		&ShadowSink{
 			agreement: shadowAgree, oneSided: shadowOneSided,
 			timeouts: shadowTimeouts, errs: shadowErrs,
 			factorDelta: shadowDelta, sampled: shadowSampled,
+			duration: shadowDuration,
 		},
 		handler
 }

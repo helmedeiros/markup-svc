@@ -37,6 +37,11 @@ type ShadowMetrics interface {
 	// Operators read agree-rate-over-sampled to reason about effective
 	// comparison rate when --shadow-sample-rate < 1.0.
 	RecordSampled(sampled bool)
+	// RecordChallengerDuration records the wall-clock cost of one
+	// challenger Decide call. Enables side-by-side comparison with the
+	// champion's markup_decide_duration_seconds under real traffic
+	// (ADR-0033 performance-measurement use case).
+	RecordChallengerDuration(d time.Duration)
 }
 
 // NoopShadowMetrics is the safe default when no metrics sink is
@@ -48,7 +53,8 @@ func (NoopShadowMetrics) RecordOneSided(string)     {}
 func (NoopShadowMetrics) RecordTimeout()            {}
 func (NoopShadowMetrics) RecordError()              {}
 func (NoopShadowMetrics) RecordFactorDelta(float64) {}
-func (NoopShadowMetrics) RecordSampled(bool)        {}
+func (NoopShadowMetrics) RecordSampled(bool)               {}
+func (NoopShadowMetrics) RecordChallengerDuration(time.Duration) {}
 
 // DecideOption configures the /decide handler at construction time.
 // Backwards-compatible: zero options yields the pre-ADR-0032 handler.
@@ -105,7 +111,9 @@ func evaluateChallenger(ctx context.Context, challenger markup.Decider, req mark
 		defer span.End()
 	}
 
+	start := time.Now()
 	chDecision, chErr := challenger.Decide(shadowCtx, req)
+	m.RecordChallengerDuration(time.Since(start))
 
 	if errors.Is(shadowCtx.Err(), context.DeadlineExceeded) || errors.Is(chErr, context.DeadlineExceeded) {
 		m.RecordTimeout()
