@@ -48,3 +48,4 @@ NNNN-short-decision-name.md
 | [0027](0027-invalid-rule-set-400.md) | InvalidRuleSetError ↦ 400 on /admin/reload + /admin/diagnose | ✅ Accepted |
 | [0028](0028-admin-handler-otel-spans.md) | OTel spans on /admin/* handlers | ✅ Accepted |
 | [0030](0030-body-based-reload.md) | Body-based /admin/reload | ✅ Accepted |
+| [0031](0031-shadow-admin-surface.md) | Shadow admin surface — load and clear a challenger Decider | ✅ Accepted |

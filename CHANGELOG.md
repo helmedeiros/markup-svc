@@ -7,6 +7,10 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- ADR-0031 Accepted: Shadow admin surface — load and clear a challenger Decider. New `--shadow-admin` flag mounts `POST /admin/load-challenger` (reuses the ADR-0030 body-loader contract, runs Diagnose, returns the same `{rule_count, model_version}` envelope on success and the ADR-0026 `{error, healthy:false, errors, warnings}` envelope on Diagnose failure) and `DELETE /admin/challenger` (idempotent 204). The challenger lives in a new nil-aware `internal/decider/shadow.Holder` with `Load`/`Clear`/`Get`; the handler layer accepts a `ChallengerHolder` interface so the port package stays free of the adapter import. Off by default; when off, no new routes register and no challenger Holder is allocated. The compiled binary carries the new package's type metadata so it is not byte-identical to a pre-flag build, but the runtime behaviour on `/decide` is observably unchanged. First step of the shadow-Decider arc; subsequent ADRs add `/decide` consultation, registry-side push, observability surfaces, and mrctl ergonomics.
+
 ## [0.1.21] - 2023-06-21
 
 CI fix for v0.1.19/v0.1.20 + completion of ADR-0030's test commitment.
