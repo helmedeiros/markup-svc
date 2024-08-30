@@ -76,7 +76,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	allowedCountries := fs.String("allowed-countries", "", "guardrails: comma-separated list of allowed Request.Country values (e.g., BR,DE,FR); see ADR-0014")
 	requiredFields := fs.String("required-fields", "", "guardrails: comma-separated list of Request fields that must be non-empty (e.g., customer_tier,country); see ADR-0014")
 	guardrailsAdmin := fs.Bool("guardrails-admin", false, "mount POST/GET /admin/guardrails for hot-replacing the active rule set without restart (see ADR-0015); enables Holder-based wiring with a ~10 ns lock-pair per Decide")
-	shadowAdmin := fs.Bool("shadow-admin", false, "mount POST /admin/load-challenger + DELETE /admin/challenger for the shadow Decider lifecycle (ADR-0031); challenger is held but not yet executed against /decide until the next iteration lands")
+	shadowAdmin := fs.Bool("shadow-admin", false, "mount POST /admin/load-challenger + DELETE /admin/challenger for the shadow Decider lifecycle (ADR-0031)")
+	shadowSampleRate := fs.Float64("shadow-sample-rate", 1.0, "fraction of /decide calls that run the challenger comparison; 1.0 every request, 0.1 = 10%, 0.0 disables comparison while keeping the admin surface live (ADR-0033)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -185,7 +186,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			bootAdapter = *adapter
 		}
 		body := newBodyLoader(bootAdapter, *modelVersion, stderr)
-		h, initialResult, err := wireTracedHandler(loader, body, tracer, guardWiring, metricsWire, log, diagnoseFn, *shadowAdmin)
+		h, initialResult, err := wireTracedHandler(loader, body, tracer, guardWiring, metricsWire, log, diagnoseFn, *shadowAdmin, *shadowSampleRate)
 		if err != nil {
 			return err
 		}
@@ -262,7 +263,7 @@ func isReady() (string, bool) {
 // http.Handler is the production wiring -- same shape used by
 // tests so they exercise the real seam.
 func wireHandler(loader httpapi.Loader) (http.Handler, httpapi.ReloadResult, error) {
-	return wireTracedHandler(loader, nil, nil, guardrailsWire{}, metricsWiring{}, nil, nil, false)
+	return wireTracedHandler(loader, nil, nil, guardrailsWire{}, metricsWiring{}, nil, nil, false, 1.0)
 }
 
 // metricsWiring bundles the optional Prometheus metrics decorator
@@ -526,7 +527,7 @@ func buildRoutes(specs routeFlagList, stderr io.Writer) ([]router.Route, []route
 // holder's inner still flows through the traced layer and continues
 // emitting spans. The /admin/reload route keeps calling holder.Swap
 // directly -- swaps are administrative, not user traffic.
-func wireTracedHandler(loader httpapi.Loader, body httpapi.ReloadBodyLoader, tracer trace.Tracer, gw guardrailsWire, mw metricsWiring, log *jsonlog.Logger, diagnoseFn httpapi.DiagnoseFn, shadowAdmin bool) (http.Handler, httpapi.ReloadResult, error) {
+func wireTracedHandler(loader httpapi.Loader, body httpapi.ReloadBodyLoader, tracer trace.Tracer, gw guardrailsWire, mw metricsWiring, log *jsonlog.Logger, diagnoseFn httpapi.DiagnoseFn, shadowAdmin bool, shadowSampleRate float64) (http.Handler, httpapi.ReloadResult, error) {
 	initial, result, err := loader()
 	if err != nil {
 		return nil, httpapi.ReloadResult{}, err
@@ -554,7 +555,7 @@ func wireTracedHandler(loader httpapi.Loader, body httpapi.ReloadBodyLoader, tra
 		shadowHolder := shadow.New()
 		mux.Handle("/admin/load-challenger", httpapi.WithAdminSpan(tracer, "markup.admin.load_challenger", httpapi.LoadChallenger(shadowHolder, body)))
 		mux.Handle("/admin/challenger", httpapi.WithAdminSpan(tracer, "markup.admin.clear_challenger", httpapi.ClearChallenger(shadowHolder)))
-		decideOpts = append(decideOpts, httpapi.WithShadow(shadowHolder, shadowMetricsOrNoop(mw.shadow), httpapi.DefaultShadowTimeout, tracer))
+		decideOpts = append(decideOpts, httpapi.WithShadow(shadowHolder, shadowMetricsOrNoop(mw.shadow), httpapi.DefaultShadowTimeout, tracer, shadowSampleRate))
 	}
 	mux.Handle("/decide", httpapi.Decide(decideDecider, decideOpts...))
 	var reloadH http.Handler

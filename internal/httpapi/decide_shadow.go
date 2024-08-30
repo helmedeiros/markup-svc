@@ -4,12 +4,18 @@ import (
 	"context"
 	"errors"
 	"math"
+	"math/rand"
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/helmedeiros/markup-svc/internal/markup"
 )
+
+// defaultSampler is the production random source. Uses math/rand
+// (cheap, not crypto). Sampling decisions are not security-sensitive;
+// a request whose hash is predictable cannot exploit the choice.
+var defaultSampler = rand.Float64
 
 // DefaultShadowTimeout caps the wall-clock budget the challenger gets
 // per /decide. Set well above the champion's measured p99 + room for
@@ -26,6 +32,11 @@ type ShadowMetrics interface {
 	RecordTimeout()
 	RecordError()
 	RecordFactorDelta(delta float64)
+	// RecordSampled fires on every /decide where a challenger is loaded
+	// regardless of whether the sample check selected this request.
+	// Operators read agree-rate-over-sampled to reason about effective
+	// comparison rate when --shadow-sample-rate < 1.0.
+	RecordSampled(sampled bool)
 }
 
 // NoopShadowMetrics is the safe default when no metrics sink is
@@ -37,29 +48,44 @@ func (NoopShadowMetrics) RecordOneSided(string)     {}
 func (NoopShadowMetrics) RecordTimeout()            {}
 func (NoopShadowMetrics) RecordError()              {}
 func (NoopShadowMetrics) RecordFactorDelta(float64) {}
+func (NoopShadowMetrics) RecordSampled(bool)        {}
 
 // DecideOption configures the /decide handler at construction time.
 // Backwards-compatible: zero options yields the pre-ADR-0032 handler.
 type DecideOption func(*decideConfig)
 
 type decideConfig struct {
-	shadow ChallengerHolder
-	metrics ShadowMetrics
-	timeout time.Duration
-	tracer  trace.Tracer
+	shadow     ChallengerHolder
+	metrics    ShadowMetrics
+	timeout    time.Duration
+	tracer     trace.Tracer
+	sampleRate float64
+	sampler    func() float64
 }
 
 // WithShadow wires the challenger Holder, metrics sink, timeout, and
 // tracer into /decide. When holder.Get returns loaded=false the
 // handler short-circuits without spawning a goroutine or allocating
-// metrics state.
-func WithShadow(holder ChallengerHolder, metrics ShadowMetrics, timeout time.Duration, tracer trace.Tracer) DecideOption {
+// metrics state. sampleRate selects what fraction of /decide calls
+// run the shadow comparison; 1.0 (or 0 — interpreted as default) runs
+// every request, 0.1 runs 10%, 0.0 disables sampling but keeps the
+// admin surface live (useful for "I want the challenger loaded but
+// not yet running").
+func WithShadow(holder ChallengerHolder, metrics ShadowMetrics, timeout time.Duration, tracer trace.Tracer, sampleRate float64) DecideOption {
 	return func(c *decideConfig) {
 		c.shadow = holder
 		c.metrics = metrics
 		c.timeout = timeout
 		c.tracer = tracer
+		c.sampleRate = sampleRate
 	}
+}
+
+// WithShadowSampler overrides the default random sampler. Tests pass
+// a deterministic function; production uses the default math/rand
+// based one.
+func WithShadowSampler(sample func() float64) DecideOption {
+	return func(c *decideConfig) { c.sampler = sample }
 }
 
 // evaluateChallenger compares one champion result against the
@@ -116,3 +142,22 @@ func evaluateChallenger(ctx context.Context, challenger markup.Decider, req mark
 // places; 1e-9 is far below any rounding the upstream pipeline can
 // produce, so equal-up-to-this is the agreement criterion.
 const factorEpsilon = 1e-9
+
+// sampleAllows answers "should this /decide call run the shadow
+// comparison?". Effective rate of 1.0 (or unset) runs every call;
+// 0.0 disables the comparison without unmounting the admin surface
+// (operator wants the challenger loaded but not yet evaluated, e.g.
+// dark-launch of a rule set whose Diagnose pass they want to keep
+// passing on every reload).
+func (c decideConfig) sampleAllows() bool {
+	switch {
+	case c.sampleRate <= 0:
+		return false
+	case c.sampleRate >= 1:
+		return true
+	}
+	if c.sampler != nil {
+		return c.sampler() < c.sampleRate
+	}
+	return defaultSampler() < c.sampleRate
+}

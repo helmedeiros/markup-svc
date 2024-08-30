@@ -135,6 +135,11 @@ func dispatchShadow(parent context.Context, cfg decideConfig, req markup.Request
 	if !loaded {
 		return
 	}
+	if !cfg.sampleAllows() {
+		cfg.metrics.RecordSampled(false)
+		return
+	}
+	cfg.metrics.RecordSampled(true)
 	detached := trace.ContextWithSpanContext(context.Background(), trace.SpanContextFromContext(parent))
 	go evaluateChallenger(detached, challenger, req, champion, championErr, cfg.metrics, cfg.timeout, cfg.tracer)
 }

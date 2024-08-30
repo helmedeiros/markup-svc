@@ -19,6 +19,7 @@ type fakeShadowMetrics struct {
 	mu                 sync.Mutex
 	agreeTrue, agreeFalse, timeouts, errors int
 	oneSidedChampion, oneSidedChallenger    int
+	sampledTrue, sampledFalse               int
 	deltas                                  []float64
 }
 
@@ -48,10 +49,20 @@ func (f *fakeShadowMetrics) RecordFactorDelta(d float64) {
 	defer f.mu.Unlock()
 	f.deltas = append(f.deltas, d)
 }
+func (f *fakeShadowMetrics) RecordSampled(sampled bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if sampled {
+		f.sampledTrue++
+	} else {
+		f.sampledFalse++
+	}
+}
 
 type metricsSnapshot struct {
 	agreeTrue, agreeFalse, timeouts, errors int
 	oneSidedChampion, oneSidedChallenger    int
+	sampledTrue, sampledFalse               int
 	deltas                                  []float64
 }
 
@@ -65,6 +76,8 @@ func (f *fakeShadowMetrics) snapshot() metricsSnapshot {
 		errors:              f.errors,
 		oneSidedChampion:    f.oneSidedChampion,
 		oneSidedChallenger:  f.oneSidedChallenger,
+		sampledTrue:         f.sampledTrue,
+		sampledFalse:        f.sampledFalse,
 		deltas:              append([]float64(nil), f.deltas...),
 	}
 }
@@ -88,7 +101,7 @@ func decideBody() []byte {
 
 func runDecide(t *testing.T, champion markup.Decider, holder httpapi.ChallengerHolder, m *fakeShadowMetrics) {
 	t.Helper()
-	h := httpapi.Decide(champion, httpapi.WithShadow(holder, m, 100*time.Millisecond, nil))
+	h := httpapi.Decide(champion, httpapi.WithShadow(holder, m, 100*time.Millisecond, nil, 1.0))
 	req := httptest.NewRequest(http.MethodPost, "/decide", bytes.NewReader(decideBody()))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -188,7 +201,7 @@ func TestDecide_ChallengerTimeoutCountsAsTimeout(t *testing.T) {
 	holder := shadow.New()
 	holder.Load(slowDecider{sleep: 200 * time.Millisecond})
 	m := &fakeShadowMetrics{}
-	h := httpapi.Decide(fixedDecider{factor: 1.2, rule: "alpha"}, httpapi.WithShadow(holder, m, 5*time.Millisecond, nil))
+	h := httpapi.Decide(fixedDecider{factor: 1.2, rule: "alpha"}, httpapi.WithShadow(holder, m, 5*time.Millisecond, nil, 1.0))
 	req := httptest.NewRequest(http.MethodPost, "/decide", bytes.NewReader(decideBody()))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -225,4 +238,69 @@ func TestDecide_ChallengerErrorCountsAsError(t *testing.T) {
 	m := &fakeShadowMetrics{}
 	runDecide(t, fixedDecider{factor: 1.2, rule: "alpha"}, holder, m)
 	waitFor(t, func() bool { return m.snapshot().errors == 1 })
+}
+
+func TestDecide_SampleRateZeroDisablesComparisonButRecordsSampledFalse(t *testing.T) {
+	holder := shadow.New()
+	holder.Load(fixedDecider{factor: 1.2, rule: "alpha"})
+	m := &fakeShadowMetrics{}
+	h := httpapi.Decide(fixedDecider{factor: 1.2, rule: "alpha"},
+		httpapi.WithShadow(holder, m, 100*time.Millisecond, nil, 0.0))
+	for i := 0; i < 5; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/decide", bytes.NewReader(decideBody()))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+	}
+	time.Sleep(30 * time.Millisecond)
+	snap := m.snapshot()
+	if snap.agreeTrue+snap.agreeFalse > 0 {
+		t.Fatalf("sample=0.0 should skip comparison; got agreement: %+v", snap)
+	}
+	if snap.sampledFalse != 5 {
+		t.Fatalf("sampledFalse=%d want 5", snap.sampledFalse)
+	}
+	if snap.sampledTrue != 0 {
+		t.Fatalf("sampledTrue=%d want 0", snap.sampledTrue)
+	}
+}
+
+func TestDecide_SampleRateOneRunsEveryRequest(t *testing.T) {
+	holder := shadow.New()
+	holder.Load(fixedDecider{factor: 1.2, rule: "alpha"})
+	m := &fakeShadowMetrics{}
+	h := httpapi.Decide(fixedDecider{factor: 1.2, rule: "alpha"},
+		httpapi.WithShadow(holder, m, 100*time.Millisecond, nil, 1.0))
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/decide", bytes.NewReader(decideBody()))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+	}
+	waitFor(t, func() bool { return m.snapshot().sampledTrue == 3 && m.snapshot().agreeTrue == 3 })
+}
+
+func TestDecide_SampleRatePartialUsesDeterministicSampler(t *testing.T) {
+	holder := shadow.New()
+	holder.Load(fixedDecider{factor: 1.2, rule: "alpha"})
+	m := &fakeShadowMetrics{}
+	// Every other call returns 0.05 (< 0.5 → sample yes), 0.99 (> 0.5 → sample no)
+	calls := 0
+	sampler := func() float64 {
+		calls++
+		if calls%2 == 1 {
+			return 0.05
+		}
+		return 0.99
+	}
+	h := httpapi.Decide(fixedDecider{factor: 1.2, rule: "alpha"},
+		httpapi.WithShadow(holder, m, 100*time.Millisecond, nil, 0.5),
+		httpapi.WithShadowSampler(sampler))
+	for i := 0; i < 4; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/decide", bytes.NewReader(decideBody()))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+	}
+	waitFor(t, func() bool {
+		snap := m.snapshot()
+		return snap.sampledTrue == 2 && snap.sampledFalse == 2 && snap.agreeTrue == 2
+	})
 }

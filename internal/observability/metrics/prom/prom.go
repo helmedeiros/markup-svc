@@ -32,6 +32,7 @@ type ShadowSink struct {
 	timeouts    prometheus.Counter
 	errs        prometheus.Counter
 	factorDelta prometheus.Histogram
+	sampled     *prometheus.CounterVec
 }
 
 // RecordAgreement implements httpapi.ShadowMetrics.
@@ -54,6 +55,15 @@ func (s *ShadowSink) RecordError() { s.errs.Inc() }
 
 // RecordFactorDelta implements httpapi.ShadowMetrics.
 func (s *ShadowSink) RecordFactorDelta(delta float64) { s.factorDelta.Observe(delta) }
+
+// RecordSampled implements httpapi.ShadowMetrics.
+func (s *ShadowSink) RecordSampled(sampled bool) {
+	if sampled {
+		s.sampled.WithLabelValues("true").Inc()
+	} else {
+		s.sampled.WithLabelValues("false").Inc()
+	}
+}
 
 // shadowFactorDeltaBuckets cover the realistic markup-factor delta
 // range: rules carry factors at ~3 decimal places and live in
@@ -141,13 +151,20 @@ func New() (*Sink, *ShadowSink, http.Handler) {
 		Help:    "abs(champion_factor - challenger_factor) recorded only on disagreement (ADR-0032).",
 		Buckets: shadowFactorDeltaBuckets,
 	})
-	reg.MustRegister(count, dur, shadowAgree, shadowOneSided, shadowTimeouts, shadowErrs, shadowDelta)
+	shadowSampled := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "markup_challenger_sampled_total",
+			Help: "Per /decide call where a challenger is loaded, whether the sample check selected the request (sampled=true|false). Effective comparison rate = true / (true + false) (ADR-0033).",
+		},
+		[]string{"sampled"},
+	)
+	reg.MustRegister(count, dur, shadowAgree, shadowOneSided, shadowTimeouts, shadowErrs, shadowDelta, shadowSampled)
 	handler := promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
 	return &Sink{count: count, dur: dur},
 		&ShadowSink{
 			agreement: shadowAgree, oneSided: shadowOneSided,
 			timeouts: shadowTimeouts, errs: shadowErrs,
-			factorDelta: shadowDelta,
+			factorDelta: shadowDelta, sampled: shadowSampled,
 		},
 		handler
 }

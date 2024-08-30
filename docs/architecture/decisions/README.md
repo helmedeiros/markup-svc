@@ -50,3 +50,4 @@ NNNN-short-decision-name.md
 | [0030](0030-body-based-reload.md) | Body-based /admin/reload | ✅ Accepted |
 | [0031](0031-shadow-admin-surface.md) | Shadow admin surface — load and clear a challenger Decider | ✅ Accepted |
 | [0032](0032-shadow-decide-execution.md) | Shadow /decide execution — run champion + challenger in parallel | ✅ Accepted |
+| [0033](0033-shadow-sample-rate.md) | Shadow sample rate — operator-tunable comparison frequency | ✅ Accepted |

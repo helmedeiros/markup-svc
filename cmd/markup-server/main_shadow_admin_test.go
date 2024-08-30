@@ -18,7 +18,7 @@ func TestE2E_ShadowAdminLifecycleLoadAndClear(t *testing.T) {
 	loader := rulesLoader(rulesPath, "inmemory", "v0-shadow", io.Discard)
 	body := newBodyLoader("inmemory", "v0-shadow", io.Discard)
 
-	handler, _, err := wireTracedHandler(loader, body, nil, guardrailsWire{}, metricsWiring{}, nil, nil, true)
+	handler, _, err := wireTracedHandler(loader, body, nil, guardrailsWire{}, metricsWiring{}, nil, nil, true, 1.0)
 	if err != nil {
 		t.Fatalf("wireTracedHandler: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestE2E_ShadowAdminRoutesAbsentWhenDisabled(t *testing.T) {
 	loader := rulesLoader(rulesPath, "inmemory", "v0-shadow", io.Discard)
 	body := newBodyLoader("inmemory", "v0-shadow", io.Discard)
 
-	handler, _, err := wireTracedHandler(loader, body, nil, guardrailsWire{}, metricsWiring{}, nil, nil, false)
+	handler, _, err := wireTracedHandler(loader, body, nil, guardrailsWire{}, metricsWiring{}, nil, nil, false, 1.0)
 	if err != nil {
 		t.Fatalf("wireTracedHandler: %v", err)
 	}
