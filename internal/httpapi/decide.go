@@ -5,9 +5,12 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/helmedeiros/markup-svc/internal/markup"
 )
@@ -64,7 +67,20 @@ type errorBody struct {
 // body, calls d.Decide, and writes the Decision (200) or maps the
 // error per ADR-0003. The handler is closure-bound to d so different
 // model versions or adapters can be mounted on different muxes.
-func Decide(d markup.Decider) http.Handler {
+// Options activate optional behaviour (e.g. WithShadow for ADR-0032
+// challenger comparison); zero options yields the v0.1.x handler
+// bit-for-bit.
+func Decide(d markup.Decider, opts ...DecideOption) http.Handler {
+	cfg := decideConfig{}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	if cfg.metrics == nil {
+		cfg.metrics = NoopShadowMetrics{}
+	}
+	if cfg.timeout == 0 {
+		cfg.timeout = DefaultShadowTimeout
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
@@ -77,8 +93,9 @@ func Decide(d markup.Decider) http.Handler {
 			return
 		}
 		req := dr.toMarkupRequest()
-		decision, err := d.Decide(r.Context(), req)
 		ctx := r.Context()
+		decision, err := d.Decide(ctx, req)
+		dispatchShadow(ctx, cfg, req, decision, err)
 		if err != nil {
 			if errors.Is(err, markup.ErrNoMatch) {
 				*r = *r.WithContext(withDecisionContext(ctx, decisionLogEntry{request: req, noMatch: true}))
@@ -92,6 +109,34 @@ func Decide(d markup.Decider) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(fromDecision(decision))
 	})
+}
+
+// dispatchShadow fast-paths out when no challenger is wired or when
+// the holder reports loaded=false. The detached context preserves
+// trace propagation without inheriting parent cancellation so the
+// goroutine survives the response write.
+//
+// When the champion failed with anything other than ErrNoMatch, the
+// shadow comparison is not meaningful (we have no champion verdict
+// to compare against), so dispatch short-circuits without spawning.
+//
+// The challenger Decider is captured at dispatch time and passed
+// directly into the goroutine: if Clear() races between dispatch and
+// execution, the in-flight comparison runs through to completion on
+// the captured Decider rather than racing the holder a second time.
+func dispatchShadow(parent context.Context, cfg decideConfig, req markup.Request, champion markup.Decision, championErr error) {
+	if cfg.shadow == nil {
+		return
+	}
+	if championErr != nil && !errors.Is(championErr, markup.ErrNoMatch) {
+		return
+	}
+	challenger, loaded := cfg.shadow.Get()
+	if !loaded {
+		return
+	}
+	detached := trace.ContextWithSpanContext(context.Background(), trace.SpanContextFromContext(parent))
+	go evaluateChallenger(detached, challenger, req, champion, championErr, cfg.metrics, cfg.timeout, cfg.tracer)
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {

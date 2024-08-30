@@ -19,7 +19,7 @@ import (
 // /metrics scrape body contains exactly the matching counter +
 // histogram lines.
 func TestSink_RecordDecision_ExposesCountersAndHistograms(t *testing.T) {
-	sink, handler := prom.New()
+	sink, _, handler := prom.New()
 
 	sink.RecordDecision(metrics.DecisionMetric{
 		Adapter:      "*inmemory.Engine",
@@ -60,7 +60,7 @@ func TestSink_RecordDecision_ExposesCountersAndHistograms(t *testing.T) {
 // counts for a sequence of real Decide invocations through an
 // in-memory stub Decider.
 func TestSink_AsDecorator(t *testing.T) {
-	sink, handler := prom.New()
+	sink, _, handler := prom.New()
 
 	inner := &stubDecider{
 		decision: markup.Decision{EngineAdapter: "*stub", ModelVersion: "vTest", Rule: "default", MarkupFactor: 1.00},

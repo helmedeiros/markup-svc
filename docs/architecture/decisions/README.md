@@ -49,3 +49,4 @@ NNNN-short-decision-name.md
 | [0028](0028-admin-handler-otel-spans.md) | OTel spans on /admin/* handlers | ✅ Accepted |
 | [0030](0030-body-based-reload.md) | Body-based /admin/reload | ✅ Accepted |
 | [0031](0031-shadow-admin-surface.md) | Shadow admin surface — load and clear a challenger Decider | ✅ Accepted |
+| [0032](0032-shadow-decide-execution.md) | Shadow /decide execution — run champion + challenger in parallel | ✅ Accepted |

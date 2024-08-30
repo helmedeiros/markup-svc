@@ -113,8 +113,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	var metricsWire metricsWiring
 	if *metricsEnabled {
-		sink, h := mkprom.New()
-		metricsWire = metricsWiring{sink: sink, handler: h}
+		sink, shadowSink, h := mkprom.New()
+		metricsWire = metricsWiring{sink: sink, shadow: shadowSink, handler: h}
 	}
 
 	log := jsonlog.New(stdout)
@@ -272,7 +272,15 @@ func wireHandler(loader httpapi.Loader) (http.Handler, httpapi.ReloadResult, err
 // scrape contract.
 type metricsWiring struct {
 	sink    mkmetrics.Sink
+	shadow  httpapi.ShadowMetrics
 	handler http.Handler
+}
+
+func shadowMetricsOrNoop(s httpapi.ShadowMetrics) httpapi.ShadowMetrics {
+	if s != nil {
+		return s
+	}
+	return httpapi.NoopShadowMetrics{}
 }
 
 // guardrailsWire bundles the optional guardrails-decorator layer and
@@ -541,7 +549,14 @@ func wireTracedHandler(loader httpapi.Loader, body httpapi.ReloadBodyLoader, tra
 		decideDecider = mkmetrics.Wrap(decideDecider, mw.sink)
 	}
 	mux := http.NewServeMux()
-	mux.Handle("/decide", httpapi.Decide(decideDecider))
+	var decideOpts []httpapi.DecideOption
+	if shadowAdmin && body != nil {
+		shadowHolder := shadow.New()
+		mux.Handle("/admin/load-challenger", httpapi.WithAdminSpan(tracer, "markup.admin.load_challenger", httpapi.LoadChallenger(shadowHolder, body)))
+		mux.Handle("/admin/challenger", httpapi.WithAdminSpan(tracer, "markup.admin.clear_challenger", httpapi.ClearChallenger(shadowHolder)))
+		decideOpts = append(decideOpts, httpapi.WithShadow(shadowHolder, shadowMetricsOrNoop(mw.shadow), httpapi.DefaultShadowTimeout, tracer))
+	}
+	mux.Handle("/decide", httpapi.Decide(decideDecider, decideOpts...))
 	var reloadH http.Handler
 	reloadOpts := []httpapi.ReloadOption{}
 	if diagnoseFn != nil {
@@ -559,11 +574,6 @@ func wireTracedHandler(loader httpapi.Loader, body httpapi.ReloadBodyLoader, tra
 		gw.mountAdmin(mux, func(h http.Handler) http.Handler {
 			return httpapi.WithAdminSpan(tracer, "markup.admin.guardrails", h)
 		})
-	}
-	if shadowAdmin && body != nil {
-		shadowHolder := shadow.New()
-		mux.Handle("/admin/load-challenger", httpapi.WithAdminSpan(tracer, "markup.admin.load_challenger", httpapi.LoadChallenger(shadowHolder, body)))
-		mux.Handle("/admin/challenger", httpapi.WithAdminSpan(tracer, "markup.admin.clear_challenger", httpapi.ClearChallenger(shadowHolder)))
 	}
 	if mw.handler != nil {
 		mux.Handle("/metrics", mw.handler)

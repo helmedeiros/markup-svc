@@ -23,6 +23,43 @@ type Sink struct {
 	dur   *prometheus.HistogramVec
 }
 
+// ShadowSink implements httpapi.ShadowMetrics. Shares the same
+// private registry as Sink so /metrics exposes Decide + shadow
+// counters from one scrape.
+type ShadowSink struct {
+	agreement   *prometheus.CounterVec
+	oneSided    *prometheus.CounterVec
+	timeouts    prometheus.Counter
+	errs        prometheus.Counter
+	factorDelta prometheus.Histogram
+}
+
+// RecordAgreement implements httpapi.ShadowMetrics.
+func (s *ShadowSink) RecordAgreement(agree bool) {
+	if agree {
+		s.agreement.WithLabelValues("true").Inc()
+	} else {
+		s.agreement.WithLabelValues("false").Inc()
+	}
+}
+
+// RecordOneSided implements httpapi.ShadowMetrics.
+func (s *ShadowSink) RecordOneSided(side string) { s.oneSided.WithLabelValues(side).Inc() }
+
+// RecordTimeout implements httpapi.ShadowMetrics.
+func (s *ShadowSink) RecordTimeout() { s.timeouts.Inc() }
+
+// RecordError implements httpapi.ShadowMetrics.
+func (s *ShadowSink) RecordError() { s.errs.Inc() }
+
+// RecordFactorDelta implements httpapi.ShadowMetrics.
+func (s *ShadowSink) RecordFactorDelta(delta float64) { s.factorDelta.Observe(delta) }
+
+// shadowFactorDeltaBuckets cover the realistic markup-factor delta
+// range: rules carry factors at ~3 decimal places and live in
+// [0.5, 5.0]; deltas span 1e-3 to ~1 with the long tail at 0.1-0.5.
+var shadowFactorDeltaBuckets = []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0}
+
 // decideBuckets covers the measured hot-path range (engine work
 // 10-100us, full Decider stack 17us-1ms median, tail to ~10ms).
 // prometheus.DefBuckets starts at 5ms and reads flat. See ADR-0024.
@@ -60,7 +97,7 @@ var decideBuckets = []float64{
 // the histogram is mostly informative at the lower end. A
 // custom-buckets ADR can land if production tail-latency
 // investigation needs different breakpoints.
-func New() (*Sink, http.Handler) {
+func New() (*Sink, *ShadowSink, http.Handler) {
 	reg := prometheus.NewRegistry()
 	count := prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -77,9 +114,42 @@ func New() (*Sink, http.Handler) {
 		},
 		[]string{"adapter", "model_version", "outcome"},
 	)
-	reg.MustRegister(count, dur)
+	shadowAgree := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "markup_challenger_agreement_total",
+			Help: "Shadow Decider comparison outcomes (ADR-0032). agree=true|false; both-decline counts as agree=true.",
+		},
+		[]string{"agree"},
+	)
+	shadowOneSided := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "markup_challenger_one_sided_total",
+			Help: "Shadow comparison where exactly one of champion/challenger fired (ADR-0032). side=champion_only|challenger_only.",
+		},
+		[]string{"side"},
+	)
+	shadowTimeouts := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "markup_challenger_eval_timeout_total",
+		Help: "Shadow Decider missed its evaluation deadline (ADR-0032).",
+	})
+	shadowErrs := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "markup_challenger_eval_errors_total",
+		Help: "Shadow Decider returned a non-ErrNoMatch error (ADR-0032).",
+	})
+	shadowDelta := prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "markup_challenger_factor_delta",
+		Help:    "abs(champion_factor - challenger_factor) recorded only on disagreement (ADR-0032).",
+		Buckets: shadowFactorDeltaBuckets,
+	})
+	reg.MustRegister(count, dur, shadowAgree, shadowOneSided, shadowTimeouts, shadowErrs, shadowDelta)
 	handler := promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
-	return &Sink{count: count, dur: dur}, handler
+	return &Sink{count: count, dur: dur},
+		&ShadowSink{
+			agreement: shadowAgree, oneSided: shadowOneSided,
+			timeouts: shadowTimeouts, errs: shadowErrs,
+			factorDelta: shadowDelta,
+		},
+		handler
 }
 
 // RecordDecision implements metrics.Sink.
