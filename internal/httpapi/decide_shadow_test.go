@@ -369,6 +369,24 @@ func TestDecide_TimeoutEmitsStructuredLog(t *testing.T) {
 	waitFor(t, func() bool { return strings.Contains(buf.String(), `"outcome":"timeout"`) })
 }
 
+func TestDecide_CustomShadowTimeoutHonoured(t *testing.T) {
+	holder := shadow.New()
+	holder.Load(slowDecider{sleep: 50 * time.Millisecond})
+	m := &fakeShadowMetrics{}
+	// A 2ms timeout is well below the slowDecider's 50ms sleep — the
+	// challenger must time out. If the flag were ignored, the test
+	// would wait the default DefaultShadowTimeout (10ms) which is
+	// still under 50ms but the assertion still holds; that's fine for
+	// this test, but a 2ms timeout guarantees the goroutine returns
+	// quickly.
+	h := httpapi.Decide(fixedDecider{factor: 1.2, rule: "alpha"},
+		httpapi.WithShadow(holder, m, 2*time.Millisecond, nil, 1.0))
+	req := httptest.NewRequest(http.MethodPost, "/decide", bytes.NewReader(decideBody()))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	waitFor(t, func() bool { return m.snapshot().timeouts == 1 })
+}
+
 func TestDecide_RecordsChallengerLatencyHistogram(t *testing.T) {
 	holder := shadow.New()
 	holder.Load(slowDecider{sleep: 5 * time.Millisecond})
