@@ -7,8 +7,10 @@ import (
 	"math/rand"
 	"time"
 
+	breengine "github.com/helmedeiros/bre-go/engine"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/helmedeiros/markup-svc/internal/jsonlog"
 	"github.com/helmedeiros/markup-svc/internal/markup"
 )
 
@@ -67,6 +69,7 @@ type decideConfig struct {
 	tracer     trace.Tracer
 	sampleRate float64
 	sampler    func() float64
+	shadowLog  *jsonlog.Logger
 }
 
 // WithShadow wires the challenger Holder, metrics sink, timeout, and
@@ -94,6 +97,15 @@ func WithShadowSampler(sample func() float64) DecideOption {
 	return func(c *decideConfig) { c.sampler = sample }
 }
 
+// WithShadowLogger threads a logger into evaluateChallenger so
+// interesting outcomes (timeout, error, disagreement, one-sided)
+// emit a structured log event. `agree` outcomes do NOT log — the
+// counter suffices and the volume would be prohibitive. Operators
+// pivot through the saved Kibana searches in pricing-observability.
+func WithShadowLogger(l *jsonlog.Logger) DecideOption {
+	return func(c *decideConfig) { c.shadowLog = l }
+}
+
 // evaluateChallenger compares one champion result against the
 // challenger's verdict on the same request. Runs in its own
 // goroutine; never blocks the response. ctx carries the parent
@@ -102,7 +114,7 @@ func WithShadowSampler(sample func() float64) DecideOption {
 // The challenger Decider is passed in directly (captured at dispatch
 // time) rather than re-fetched from the holder, so a racing Clear()
 // does not abort an in-flight comparison.
-func evaluateChallenger(ctx context.Context, challenger markup.Decider, req markup.Request, champion markup.Decision, championErr error, m ShadowMetrics, timeout time.Duration, tracer trace.Tracer) {
+func evaluateChallenger(ctx context.Context, challenger markup.Decider, req markup.Request, champion markup.Decision, championErr error, m ShadowMetrics, timeout time.Duration, tracer trace.Tracer, log *jsonlog.Logger) {
 	shadowCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if tracer != nil {
@@ -113,15 +125,18 @@ func evaluateChallenger(ctx context.Context, challenger markup.Decider, req mark
 
 	start := time.Now()
 	chDecision, chErr := challenger.Decide(shadowCtx, req)
-	m.RecordChallengerDuration(time.Since(start))
+	dur := time.Since(start)
+	m.RecordChallengerDuration(dur)
 
 	if errors.Is(shadowCtx.Err(), context.DeadlineExceeded) || errors.Is(chErr, context.DeadlineExceeded) {
 		m.RecordTimeout()
+		emitShadowLog(log, ctx, "timeout", champion, chDecision, dur, nil, "")
 		return
 	}
 
 	if chErr != nil && !errors.Is(chErr, markup.ErrNoMatch) {
 		m.RecordError()
+		emitShadowLog(log, ctx, "error", champion, chDecision, dur, chErr, "")
 		return
 	}
 
@@ -131,18 +146,65 @@ func evaluateChallenger(ctx context.Context, challenger markup.Decider, req mark
 	switch {
 	case championFired && !challengerFired:
 		m.RecordOneSided("champion_only")
+		emitShadowLog(log, ctx, "one_sided", champion, chDecision, dur, nil, "champion_only")
 	case !championFired && challengerFired:
 		m.RecordOneSided("challenger_only")
+		emitShadowLog(log, ctx, "one_sided", champion, chDecision, dur, nil, "challenger_only")
 	case !championFired && !challengerFired:
 		m.RecordAgreement(true)
+		// agree outcomes do not log — counter suffices and volume would be prohibitive.
 	default:
 		delta := math.Abs(champion.MarkupFactor - chDecision.MarkupFactor)
 		agree := delta < factorEpsilon
 		m.RecordAgreement(agree)
 		if !agree {
 			m.RecordFactorDelta(delta)
+			emitShadowLog(log, ctx, "disagree", champion, chDecision, dur, nil, "")
 		}
 	}
+}
+
+// emitShadowLog writes one structured event per interesting outcome.
+// Skipped for `agree` to keep log volume bounded; at sample=1.0 and
+// 2000 QPS, a 99% agreement rate would produce ~20 events/sec instead
+// of 2000.
+func emitShadowLog(log *jsonlog.Logger, ctx context.Context, outcome string, champion markup.Decision, challenger markup.Decision, dur time.Duration, chErr error, side string) {
+	if log == nil {
+		return
+	}
+	attrs := map[string]any{
+		"outcome":               outcome,
+		"shadow_duration_ms":    float64(dur) / float64(time.Millisecond),
+	}
+	if cid := breengine.CorrelationIDFromContext(ctx); cid != "" {
+		attrs["correlation_id"] = cid
+	}
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+		attrs["trace_id"] = sc.TraceID().String()
+		attrs["span_id"] = sc.SpanID().String()
+	}
+	switch outcome {
+	case "disagree":
+		attrs["champion_factor"] = champion.MarkupFactor
+		attrs["challenger_factor"] = challenger.MarkupFactor
+		attrs["delta"] = math.Abs(champion.MarkupFactor - challenger.MarkupFactor)
+		attrs["champion_rule"] = champion.Rule
+		attrs["challenger_rule"] = challenger.Rule
+	case "one_sided":
+		attrs["side"] = side
+		if side == "champion_only" {
+			attrs["champion_factor"] = champion.MarkupFactor
+			attrs["champion_rule"] = champion.Rule
+		} else {
+			attrs["challenger_factor"] = challenger.MarkupFactor
+			attrs["challenger_rule"] = challenger.Rule
+		}
+	case "error":
+		if chErr != nil {
+			attrs["error"] = chErr.Error()
+		}
+	}
+	log.Info("markup.challenger.evaluate", attrs)
 }
 
 // factorEpsilon is the float-equality tolerance for the markup

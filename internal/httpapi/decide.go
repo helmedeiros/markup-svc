@@ -141,7 +141,7 @@ func dispatchShadow(parent context.Context, cfg decideConfig, req markup.Request
 	}
 	cfg.metrics.RecordSampled(true)
 	detached := trace.ContextWithSpanContext(context.Background(), trace.SpanContextFromContext(parent))
-	go evaluateChallenger(detached, challenger, req, champion, championErr, cfg.metrics, cfg.timeout, cfg.tracer)
+	go evaluateChallenger(detached, challenger, req, champion, championErr, cfg.metrics, cfg.timeout, cfg.tracer, cfg.shadowLog)
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {

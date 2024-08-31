@@ -556,6 +556,9 @@ func wireTracedHandler(loader httpapi.Loader, body httpapi.ReloadBodyLoader, tra
 		mux.Handle("/admin/load-challenger", httpapi.WithAdminSpan(tracer, "markup.admin.load_challenger", httpapi.LoadChallenger(shadowHolder, body)))
 		mux.Handle("/admin/challenger", httpapi.WithAdminSpan(tracer, "markup.admin.clear_challenger", httpapi.ClearChallenger(shadowHolder)))
 		decideOpts = append(decideOpts, httpapi.WithShadow(shadowHolder, shadowMetricsOrNoop(mw.shadow), httpapi.DefaultShadowTimeout, tracer, shadowSampleRate))
+		if log != nil {
+			decideOpts = append(decideOpts, httpapi.WithShadowLogger(log))
+		}
 	}
 	mux.Handle("/decide", httpapi.Decide(decideDecider, decideOpts...))
 	var reloadH http.Handler

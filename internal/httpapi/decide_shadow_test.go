@@ -3,15 +3,18 @@ package httpapi_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/helmedeiros/markup-svc/internal/decider/shadow"
 	"github.com/helmedeiros/markup-svc/internal/httpapi"
+	"github.com/helmedeiros/markup-svc/internal/jsonlog"
 	"github.com/helmedeiros/markup-svc/internal/markup"
 )
 
@@ -284,6 +287,86 @@ func TestDecide_SampleRateOneRunsEveryRequest(t *testing.T) {
 		h.ServeHTTP(rec, req)
 	}
 	waitFor(t, func() bool { return m.snapshot().sampledTrue == 3 && m.snapshot().agreeTrue == 3 })
+}
+
+type safeBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *safeBuf) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *safeBuf) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func TestDecide_DisagreementEmitsStructuredLog(t *testing.T) {
+	holder := shadow.New()
+	holder.Load(fixedDecider{factor: 1.5, rule: "challenger"})
+	m := &fakeShadowMetrics{}
+	buf := &safeBuf{}
+	logger := jsonlog.New(buf)
+	h := httpapi.Decide(fixedDecider{factor: 1.2, rule: "champion"},
+		httpapi.WithShadow(holder, m, 100*time.Millisecond, nil, 1.0),
+		httpapi.WithShadowLogger(logger))
+	req := httptest.NewRequest(http.MethodPost, "/decide", bytes.NewReader(decideBody()))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	waitFor(t, func() bool { return strings.Contains(buf.String(), `"markup.challenger.evaluate"`) })
+	var event map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		_ = json.Unmarshal([]byte(line), &event)
+		if event["msg"] == "markup.challenger.evaluate" {
+			break
+		}
+	}
+	attrs, _ := event["attrs"].(map[string]any)
+	if attrs["outcome"] != "disagree" {
+		t.Fatalf("outcome=%v want disagree", attrs["outcome"])
+	}
+	if attrs["champion_factor"].(float64) != 1.2 || attrs["challenger_factor"].(float64) != 1.5 {
+		t.Fatalf("factors not surfaced: %+v", attrs)
+	}
+}
+
+func TestDecide_AgreementDoesNotEmitLog(t *testing.T) {
+	holder := shadow.New()
+	holder.Load(fixedDecider{factor: 1.2, rule: "challenger"})
+	m := &fakeShadowMetrics{}
+	buf := &safeBuf{}
+	logger := jsonlog.New(buf)
+	h := httpapi.Decide(fixedDecider{factor: 1.2, rule: "champion"},
+		httpapi.WithShadow(holder, m, 100*time.Millisecond, nil, 1.0),
+		httpapi.WithShadowLogger(logger))
+	req := httptest.NewRequest(http.MethodPost, "/decide", bytes.NewReader(decideBody()))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	waitFor(t, func() bool { return m.snapshot().agreeTrue == 1 })
+	time.Sleep(30 * time.Millisecond)
+	if strings.Contains(buf.String(), `"markup.challenger.evaluate"`) {
+		t.Fatalf("agreement should NOT emit a log event; got: %s", buf.String())
+	}
+}
+
+func TestDecide_TimeoutEmitsStructuredLog(t *testing.T) {
+	holder := shadow.New()
+	holder.Load(slowDecider{sleep: 200 * time.Millisecond})
+	m := &fakeShadowMetrics{}
+	buf := &safeBuf{}
+	logger := jsonlog.New(buf)
+	h := httpapi.Decide(fixedDecider{factor: 1.2, rule: "alpha"},
+		httpapi.WithShadow(holder, m, 5*time.Millisecond, nil, 1.0),
+		httpapi.WithShadowLogger(logger))
+	req := httptest.NewRequest(http.MethodPost, "/decide", bytes.NewReader(decideBody()))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	waitFor(t, func() bool { return strings.Contains(buf.String(), `"outcome":"timeout"`) })
 }
 
 func TestDecide_RecordsChallengerLatencyHistogram(t *testing.T) {
