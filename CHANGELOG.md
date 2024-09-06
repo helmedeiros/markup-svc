@@ -7,6 +7,10 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.22] - 2024-09-06
+
+The shadow-Decider arc lands as one release. `/decide` now runs the champion synchronously and the challenger in a detached goroutine on every request when `--shadow-admin` is on and a challenger has been loaded (ADR-0031 + ADR-0032). `--shadow-sample-rate` (ADR-0033) ties the comparison rate to a flag rather than a constant. Five Prometheus counters + two histograms (`markup_challenger_*`) and the `markup.challenger.evaluate` span + structured log now feed the registry's `/shadow-stats`, mrctl shadow, the autopromote observer, and the pricing-observability dashboards. `--shadow-timeout` makes the challenger deadline operator-tunable. Scientific harness `scientific/v0.1.22/` pre-registers four shadow-path bars and the measurement commit cleared every one. Fast path when no challenger is loaded is two-gate (nil interface check + one `RLock`/`RUnlock` on the holder mutex) — no goroutine spawn, no allocation.
+
 ### Added
 
 - `--shadow-timeout` flag (default 10ms, the existing `httpapi.DefaultShadowTimeout` constant) exposes the challenger evaluation deadline to operators. Tuning previously required a rebuild. The default is unchanged so the flag is purely additive. Wired through `wireTracedHandler` as a new `shadowTimeout time.Duration` parameter; the shim path passes `0` which falls back to `DefaultShadowTimeout` inside the wiring so the constant stays the canonical default in exactly one place. Use case from ADR-0033's runbook: a sustained `MarkupChallengerEvalTimeoutRate` alert lets the operator either (a) reject the challenger (the slow Decider stays slow) or (b) raise this timeout (the slow Decider is acceptable; the operator just needs more comparison signal). Closes a parked item flagged in markup-svc ROADMAP.local.md.
