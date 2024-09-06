@@ -147,7 +147,7 @@ func BenchmarkDecideViaNewFromRulesLarge(b *testing.B) {
 	tiers := []string{"t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8", "t9"}
 	for _, c := range countries {
 		for _, t := range tiers {
-			sb.WriteString(fmt.Sprintf("%s_%s,country == '%s' AND customer_tier == '%s',1.05,0\n", c, t, c, t))
+			fmt.Fprintf(&sb, "%s_%s,country == '%s' AND customer_tier == '%s',1.05,0\n", c, t, c, t)
 		}
 	}
 	rules, err := load.FromCSV(strings.NewReader(sb.String()))

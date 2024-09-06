@@ -1,0 +1,25 @@
+version: "2"
+linters:
+  exclusions:
+    rules:
+      # Test bodies: defer resp.Body.Close() / f.Close() is the standard
+      # Go pattern; the err is unrecoverable inside the test.
+      - path: _test\.go$
+        linters: [errcheck]
+        text: 'Error return value of `\(?.*\)?\.Close` is not checked'
+      # CLI binaries print to stdout/stderr; ignoring Fprintf write
+      # errors is the convention. A broken pipe surfaces on the next
+      # syscall.
+      - path: cmd/(snapshot-build|markup-server)/.*\.go
+        linters: [errcheck]
+        text: 'Error return value of `fmt\.(Fprintf|Fprintln|Fprint)`'
+      # CLI binaries: deferred f.Close() on read-only file handles is
+      # the canonical pattern; the err is not actionable post-defer.
+      - path: cmd/(snapshot-build|markup-server)/.*\.go
+        linters: [errcheck]
+        text: 'Error return value of `\w+\.Close` is not checked'
+      # Internal error-log writes via fmt.Fprintf(errLog, ...) intentionally
+      # ignore the write error (the operator's log pipeline owns delivery).
+      - path: internal/httpapi/guardrails_admin\.go
+        linters: [errcheck]
+        text: 'Error return value of `fmt\.(Fprintf|Fprintln|Fprint)`'
