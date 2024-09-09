@@ -19,7 +19,7 @@ import (
 // /metrics scrape body contains exactly the matching counter +
 // histogram lines.
 func TestSink_RecordDecision_ExposesCountersAndHistograms(t *testing.T) {
-	sink, _, handler := prom.New()
+	sink, _, handler := prom.New("test-env")
 
 	sink.RecordDecision(metrics.DecisionMetric{
 		Adapter:      "*inmemory.Engine",
@@ -60,7 +60,7 @@ func TestSink_RecordDecision_ExposesCountersAndHistograms(t *testing.T) {
 // counts for a sequence of real Decide invocations through an
 // in-memory stub Decider.
 func TestSink_AsDecorator(t *testing.T) {
-	sink, _, handler := prom.New()
+	sink, _, handler := prom.New("test-env")
 
 	inner := &stubDecider{
 		decision: markup.Decision{EngineAdapter: "*stub", ModelVersion: "vTest", Rule: "default", MarkupFactor: 1.00},
@@ -82,6 +82,56 @@ func TestSink_AsDecorator(t *testing.T) {
 	}
 	if !strings.Contains(body, `markup_decide_total{adapter="",model_version="",outcome="no_match"} 1`) {
 		t.Errorf("expected no_match counter = 1; got:\n%s", body)
+	}
+}
+
+// TestShadowSink_AllSeriesCarryEnvLabel exercises every Record* method
+// on the ShadowSink with env="production" and asserts the /metrics
+// scrape body carries env="production" on each series. Pins the
+// ADR-0034 contract.
+func TestShadowSink_AllSeriesCarryEnvLabel(t *testing.T) {
+	_, shadow, handler := prom.New("production")
+
+	shadow.RecordAgreement(true)
+	shadow.RecordAgreement(false)
+	shadow.RecordOneSided("champion_only")
+	shadow.RecordTimeout()
+	shadow.RecordError()
+	shadow.RecordFactorDelta(0.123)
+	shadow.RecordSampled(true)
+	shadow.RecordChallengerDuration(75 * time.Microsecond)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	wantSubstrings := []string{
+		`markup_challenger_agreement_total{agree="true",env="production"} 1`,
+		`markup_challenger_agreement_total{agree="false",env="production"} 1`,
+		`markup_challenger_one_sided_total{env="production",side="champion_only"} 1`,
+		`markup_challenger_eval_timeout_total{env="production"} 1`,
+		`markup_challenger_eval_errors_total{env="production"} 1`,
+		`markup_challenger_factor_delta_count{env="production"} 1`,
+		`markup_challenger_sampled_total{env="production",sampled="true"} 1`,
+		`markup_challenger_decide_duration_seconds_count{env="production"} 1`,
+	}
+	for _, want := range wantSubstrings {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in scrape body:\n%s", want, body)
+		}
+	}
+}
+
+// TestPromNew_EmptyEnvDefaultsToDefault pins the constructor's "" → "default"
+// fallback so a deployment that boots without setting --env produces a
+// usable env label.
+func TestPromNew_EmptyEnvDefaultsToDefault(t *testing.T) {
+	_, shadow, handler := prom.New("")
+	shadow.RecordAgreement(true)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if !strings.Contains(rec.Body.String(), `env="default"`) {
+		t.Fatalf("empty env should default to \"default\":\n%s", rec.Body.String())
 	}
 }
 

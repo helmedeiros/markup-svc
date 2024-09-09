@@ -51,3 +51,4 @@ NNNN-short-decision-name.md
 | [0031](0031-shadow-admin-surface.md) | Shadow admin surface — load and clear a challenger Decider | ✅ Accepted |
 | [0032](0032-shadow-decide-execution.md) | Shadow /decide execution — run champion + challenger in parallel | ✅ Accepted |
 | [0033](0033-shadow-sample-rate.md) | Shadow sample rate — operator-tunable comparison frequency | ✅ Accepted |
+| [0034](0034-env-label-on-shadow-metrics.md) | Env label on shadow metrics + access log + decide span | ✅ Accepted |

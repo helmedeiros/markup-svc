@@ -25,7 +25,7 @@ func TestE2EBootsWithBodyLoader_EmptyBodyReloadUnchanged(t *testing.T) {
 
 	loader := rulesLoader(rulesPath, "inmemory", "v0-body", io.Discard)
 	body := newBodyLoader("inmemory", "v0-body", io.Discard)
-	handler, _, err := wireTracedHandler(loader, body, nil, guardrailsWire{}, metricsWiring{}, nil, nil, false, 1.0, 0)
+	handler, _, err := wireTracedHandler(loader, body, nil, guardrailsWire{}, metricsWiring{}, nil, nil, false, 1.0, 0, "")
 	if err != nil {
 		t.Fatalf("wireTracedHandler: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestE2EBodyBasedReload_CSVHappyPath(t *testing.T) {
 
 	loader := rulesLoader(rulesPath, "inmemory", "v0-body", io.Discard)
 	body := newBodyLoader("inmemory", "v0-body", io.Discard)
-	handler, _, err := wireTracedHandler(loader, body, nil, guardrailsWire{}, metricsWiring{}, nil, nil, false, 1.0, 0)
+	handler, _, err := wireTracedHandler(loader, body, nil, guardrailsWire{}, metricsWiring{}, nil, nil, false, 1.0, 0, "")
 	if err != nil {
 		t.Fatalf("wireTracedHandler: %v", err)
 	}

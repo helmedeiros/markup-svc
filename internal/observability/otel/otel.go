@@ -31,6 +31,7 @@ const (
 	AttrNoMatch       = "rule.markup.no_match"
 	AttrCanceled      = "rule.markup.canceled"
 	AttrCancelReason  = "rule.markup.cancel.reason"
+	AttrEnv           = "markup.env"
 )
 
 const defaultSpanName = "markup.decider.decide"
@@ -52,6 +53,14 @@ func WithSpanKind(kind trace.SpanKind) Option {
 	return func(t *tracedDecider) { t.spanKind = kind }
 }
 
+// WithEnv stamps the process-level environment identifier on every
+// Decide span as the `markup.env` attribute (ADR-0034). Empty env
+// suppresses the attribute so existing single-env scrape targets are
+// not forced into a relabel.
+func WithEnv(env string) Option {
+	return func(t *tracedDecider) { t.env = env }
+}
+
 // Wrap returns inner decorated with one OpenTelemetry span per Decide.
 // The returned value satisfies markup.Decider so it composes with
 // other Decider decorators (e.g., swap.Decider for hot reload).
@@ -68,6 +77,7 @@ type tracedDecider struct {
 	tracer   trace.Tracer
 	spanName string
 	spanKind trace.SpanKind
+	env      string
 }
 
 // Decide implements markup.Decider. See ADR-0009's per-outcome table
@@ -82,23 +92,23 @@ func (t *tracedDecider) Decide(ctx context.Context, req markup.Request) (markup.
 
 	switch {
 	case errors.Is(err, markup.ErrNoMatch):
-		setAttrs(span, cid, attribute.Bool(AttrNoMatch, true))
+		setAttrs(span, cid, t.env, attribute.Bool(AttrNoMatch, true))
 	case errors.Is(err, context.Canceled):
-		setAttrs(span, cid,
+		setAttrs(span, cid, t.env,
 			attribute.Bool(AttrCanceled, true),
 			attribute.String(AttrCancelReason, "canceled"),
 		)
 	case errors.Is(err, context.DeadlineExceeded):
-		setAttrs(span, cid,
+		setAttrs(span, cid, t.env,
 			attribute.Bool(AttrCanceled, true),
 			attribute.String(AttrCancelReason, "deadline_exceeded"),
 		)
 	case err != nil:
-		setAttrs(span, cid)
+		setAttrs(span, cid, t.env)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 	default:
-		setAttrs(span, cid,
+		setAttrs(span, cid, t.env,
 			attribute.String(AttrAdapter, decision.EngineAdapter),
 			attribute.String(AttrModelVersion, decision.ModelVersion),
 			attribute.String(AttrRule, decision.Rule),
@@ -108,18 +118,25 @@ func (t *tracedDecider) Decide(ctx context.Context, req markup.Request) (markup.
 	return decision, err
 }
 
-// setAttrs is the single SetAttributes call per Decide outcome. It
-// prepends the correlation ID attribute when ctx carried one so the
-// span carries the markup-domain trace identity alongside the
-// outcome-specific attributes.
-func setAttrs(span trace.Span, correlationID string, extra ...attribute.KeyValue) {
-	all := extra
+func setAttrs(span trace.Span, correlationID, env string, extra ...attribute.KeyValue) {
+	n := len(extra)
 	if correlationID != "" {
-		all = append([]attribute.KeyValue{attribute.String(AttrCorrelationID, correlationID)}, extra...)
+		n++
 	}
-	if len(all) == 0 {
+	if env != "" {
+		n++
+	}
+	if n == 0 {
 		return
 	}
+	all := make([]attribute.KeyValue, 0, n)
+	if env != "" {
+		all = append(all, attribute.String(AttrEnv, env))
+	}
+	if correlationID != "" {
+		all = append(all, attribute.String(AttrCorrelationID, correlationID))
+	}
+	all = append(all, extra...)
 	span.SetAttributes(all...)
 }
 

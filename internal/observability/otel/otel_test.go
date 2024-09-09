@@ -196,6 +196,33 @@ func TestWrapNoCorrelationIDAttrWhenAbsent(t *testing.T) {
 	}
 }
 
+func TestWithEnvStampsMarkupEnvAttribute(t *testing.T) {
+	rec, tp := recorderTracer(t)
+	inner := &stubDecider{decision: markup.Decision{Rule: "x", MarkupFactor: 1.0, ModelVersion: "v1", EngineAdapter: "*x.Engine"}}
+	wrapped := mkotel.Wrap(inner, tp.Tracer("test"), mkotel.WithEnv("production"))
+
+	_, _ = wrapped.Decide(context.Background(), markup.Request{})
+
+	got := rec.Ended()[0]
+	v, ok := findAttr(got.Attributes(), mkotel.AttrEnv)
+	if !ok || v.AsString() != "production" {
+		t.Errorf("%s = %v ok=%v, want \"production\"", mkotel.AttrEnv, v.AsString(), ok)
+	}
+}
+
+func TestWithEnvOmittedWhenEmpty(t *testing.T) {
+	rec, tp := recorderTracer(t)
+	inner := &stubDecider{decision: markup.Decision{Rule: "x", MarkupFactor: 1.0, ModelVersion: "v1", EngineAdapter: "*x.Engine"}}
+	wrapped := mkotel.Wrap(inner, tp.Tracer("test"))
+
+	_, _ = wrapped.Decide(context.Background(), markup.Request{})
+
+	got := rec.Ended()[0]
+	if _, ok := findAttr(got.Attributes(), mkotel.AttrEnv); ok {
+		t.Errorf("%s should be absent when WithEnv is not set", mkotel.AttrEnv)
+	}
+}
+
 func TestWithSpanNameOverridesDefault(t *testing.T) {
 	rec, tp := recorderTracer(t)
 	inner := &stubDecider{decision: markup.Decision{Rule: "x", MarkupFactor: 1.0, ModelVersion: "v1", EngineAdapter: "*x.Engine"}}

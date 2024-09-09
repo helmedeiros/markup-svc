@@ -23,10 +23,10 @@ func TestE2E_ShadowDecideDrivesChallengerAgreementMetric(t *testing.T) {
 	loader := rulesLoader(rulesPath, "inmemory", "v0-shadow", io.Discard)
 	body := newBodyLoader("inmemory", "v0-shadow", io.Discard)
 
-	sink, shadowSink, promHandler := mkprom.New()
+	sink, shadowSink, promHandler := mkprom.New("test")
 	mw := metricsWiring{sink: sink, shadow: shadowSink, handler: promHandler}
 
-	handler, _, err := wireTracedHandler(loader, body, nil, guardrailsWire{}, mw, nil, nil, true, 1.0, 0)
+	handler, _, err := wireTracedHandler(loader, body, nil, guardrailsWire{}, mw, nil, nil, true, 1.0, 0, "")
 	if err != nil {
 		t.Fatalf("wireTracedHandler: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestE2E_ShadowDecideDrivesChallengerAgreementMetric(t *testing.T) {
 		rec := httptest.NewRecorder()
 		promHandler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 		got = rec.Body.String()
-		if strings.Contains(got, `markup_challenger_agreement_total{agree="true"} 3`) {
+		if strings.Contains(got, `markup_challenger_agreement_total{agree="true",env="test"} 3`) {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -77,10 +77,10 @@ func TestE2E_ShadowDecide_DisagreementRecordsFactorDelta(t *testing.T) {
 	loader := rulesLoader(rulesPath, "inmemory", "v0-shadow", io.Discard)
 	body := newBodyLoader("inmemory", "v0-shadow", io.Discard)
 
-	sink, shadowSink, promHandler := mkprom.New()
+	sink, shadowSink, promHandler := mkprom.New("test")
 	mw := metricsWiring{sink: sink, shadow: shadowSink, handler: promHandler}
 
-	handler, _, err := wireTracedHandler(loader, body, nil, guardrailsWire{}, mw, nil, nil, true, 1.0, 0)
+	handler, _, err := wireTracedHandler(loader, body, nil, guardrailsWire{}, mw, nil, nil, true, 1.0, 0, "")
 	if err != nil {
 		t.Fatalf("wireTracedHandler: %v", err)
 	}
@@ -114,8 +114,8 @@ func TestE2E_ShadowDecide_DisagreementRecordsFactorDelta(t *testing.T) {
 		rec := httptest.NewRecorder()
 		promHandler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 		got = rec.Body.String()
-		if strings.Contains(got, `markup_challenger_agreement_total{agree="false"} 1`) &&
-			strings.Contains(got, `markup_challenger_factor_delta_count 1`) {
+		if strings.Contains(got, `markup_challenger_agreement_total{agree="false",env="test"} 1`) &&
+			strings.Contains(got, `markup_challenger_factor_delta_count{env="test"} 1`) {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)

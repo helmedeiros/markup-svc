@@ -14,7 +14,7 @@ import (
 func TestWithAccessLog_EmitsExpectedAttrs(t *testing.T) {
 	var buf bytes.Buffer
 	l := jsonlog.New(&buf)
-	h := WithAccessLog(l, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	h := WithAccessLog(l, "", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	}))
 
@@ -62,7 +62,7 @@ func TestWithAccessLog_EnrichesWithRuleAndInputAndOutput(t *testing.T) {
 		*r = *r.WithContext(withDecisionContext(r.Context(), decisionLogEntry{request: req, decision: dec}))
 		w.WriteHeader(http.StatusOK)
 	})
-	h := WithAccessLog(l, inner)
+	h := WithAccessLog(l, "", inner)
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/decide", nil))
 
 	var got map[string]any
@@ -96,7 +96,7 @@ func TestWithAccessLog_NoMatchSetsNoMatchTrue(t *testing.T) {
 		*r = *r.WithContext(withDecisionContext(r.Context(), decisionLogEntry{request: req, noMatch: true}))
 		w.WriteHeader(http.StatusNotFound)
 	})
-	WithAccessLog(l, inner).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/decide", nil))
+	WithAccessLog(l, "", inner).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/decide", nil))
 
 	var got map[string]any
 	_ = json.Unmarshal(buf.Bytes(), &got)
@@ -112,9 +112,43 @@ func TestWithAccessLog_NoMatchSetsNoMatchTrue(t *testing.T) {
 	}
 }
 
+func TestWithAccessLog_StampsEnvWhenSet(t *testing.T) {
+	var buf bytes.Buffer
+	l := jsonlog.New(&buf)
+	h := WithAccessLog(l, "production", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/decide", nil))
+	var got map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v ; raw=%q", err, buf.String())
+	}
+	attrs := got["attrs"].(map[string]any)
+	if attrs["env"] != "production" {
+		t.Fatalf("env attr = %v, want production", attrs["env"])
+	}
+}
+
+func TestWithAccessLog_OmitsEnvAttrWhenEmpty(t *testing.T) {
+	var buf bytes.Buffer
+	l := jsonlog.New(&buf)
+	h := WithAccessLog(l, "", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/decide", nil))
+	var got map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v ; raw=%q", err, buf.String())
+	}
+	attrs := got["attrs"].(map[string]any)
+	if _, ok := attrs["env"]; ok {
+		t.Fatalf("env attr should be omitted when empty; got %v", attrs["env"])
+	}
+}
+
 func TestWithAccessLog_NilLoggerIsPassThrough(t *testing.T) {
 	called := false
-	h := WithAccessLog(nil, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	h := WithAccessLog(nil, "", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	}))

@@ -7,6 +7,14 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- ADR-0034 Accepted: env label on shadow metrics + access log + decide span. New `--env` flag (default `"default"`) tags the process with a stable environment identifier. The label lands on every `markup_challenger_*` Prometheus series, on every `markup-server.access` JSON event, and as `markup.env` on the outermost `markup.decider.decide` span. `markup_decide_*` is intentionally NOT relabeled — existing Grafana panels, PromQL queries, and pricing-observability alerts keep working unchanged. Closes the model-registry autopromote-observer fidelity gap: the observer's `registry.autopromote.gate_cleared` events name an env, and the underlying shadow stats can now be sliced per env to back that claim.
+
+### Changed
+
+- `prom.New(env string)`, `httpapi.WithAccessLog(l, env, next)`, and a new `otel.WithEnv(env)` Option carry the env across the three observability planes. `wireTracedHandler` / `wireRouterHandler` take an `env` parameter; existing test call sites pass `""` (label suppressed in the otel + access-log paths, prom replaces `""` with `"default"`).
+
 ## [0.1.22] - 2024-09-06
 
 The shadow-Decider arc lands as one release. `/decide` now runs the champion synchronously and the challenger in a detached goroutine on every request when `--shadow-admin` is on and a challenger has been loaded (ADR-0031 + ADR-0032). `--shadow-sample-rate` (ADR-0033) ties the comparison rate to a flag rather than a constant. Five Prometheus counters + two histograms (`markup_challenger_*`) and the `markup.challenger.evaluate` span + structured log now feed the registry's `/shadow-stats`, mrctl shadow, the autopromote observer, and the pricing-observability dashboards. `--shadow-timeout` makes the challenger deadline operator-tunable. Scientific harness `scientific/v0.1.22/` pre-registers four shadow-path bars and the measurement commit cleared every one. Fast path when no challenger is loaded is two-gate (nil interface check + one `RLock`/`RUnlock` on the holder mutex) — no goroutine spawn, no allocation.

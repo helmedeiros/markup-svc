@@ -79,6 +79,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	shadowAdmin := fs.Bool("shadow-admin", false, "mount POST /admin/load-challenger + DELETE /admin/challenger for the shadow Decider lifecycle (ADR-0031)")
 	shadowSampleRate := fs.Float64("shadow-sample-rate", 1.0, "fraction of /decide calls that run the challenger comparison; 1.0 every request, 0.1 = 10%, 0.0 disables comparison while keeping the admin surface live (ADR-0033)")
 	shadowTimeout := fs.Duration("shadow-timeout", httpapi.DefaultShadowTimeout, "wall-clock deadline for one challenger evaluation. A challenger that misses this budget is counted as a timeout and the comparison is dropped. Tune via this flag when a slow challenger forces operators to choose between dropping samples (timeout rate climbs) or extending the budget; 0 falls back to the default 10ms.")
+	env := fs.String("env", "default", "stable environment identifier tagged onto every markup_challenger_* metric series, every markup-server.access JSON event, and the markup.decider.decide span (see ADR-0034). Operators set whatever their topology uses (production, staging, eu-west-1, tenant-acme, ...).")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -115,7 +116,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	var metricsWire metricsWiring
 	if *metricsEnabled {
-		sink, shadowSink, h := mkprom.New()
+		sink, shadowSink, h := mkprom.New(*env)
 		metricsWire = metricsWiring{sink: sink, shadow: shadowSink, handler: h}
 	}
 
@@ -170,7 +171,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if perr != nil {
 			return perr
 		}
-		handler = wireRouterHandler(router.New(routes, policy), tracer, holders, guardWiring, metricsWire, log)
+		handler = wireRouterHandler(router.New(routes, policy), tracer, holders, guardWiring, metricsWire, log, *env)
 		ruleCount = total
 		bootSource = fmt.Sprintf("%d routes (policy=%s)", len(routes), *policyName)
 		bootAdapter = "router"
@@ -187,7 +188,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			bootAdapter = *adapter
 		}
 		body := newBodyLoader(bootAdapter, *modelVersion, stderr)
-		h, initialResult, err := wireTracedHandler(loader, body, tracer, guardWiring, metricsWire, log, diagnoseFn, *shadowAdmin, *shadowSampleRate, *shadowTimeout)
+		h, initialResult, err := wireTracedHandler(loader, body, tracer, guardWiring, metricsWire, log, diagnoseFn, *shadowAdmin, *shadowSampleRate, *shadowTimeout, *env)
 		if err != nil {
 			return err
 		}
@@ -264,7 +265,7 @@ func isReady() (string, bool) {
 // http.Handler is the production wiring -- same shape used by
 // tests so they exercise the real seam.
 func wireHandler(loader httpapi.Loader) (http.Handler, httpapi.ReloadResult, error) {
-	return wireTracedHandler(loader, nil, nil, guardrailsWire{}, metricsWiring{}, nil, nil, false, 1.0, 0)
+	return wireTracedHandler(loader, nil, nil, guardrailsWire{}, metricsWiring{}, nil, nil, false, 1.0, 0, "")
 }
 
 // metricsWiring bundles the optional Prometheus metrics decorator
@@ -358,7 +359,7 @@ func (r *routeFlagList) Set(v string) error {
 // holder. When holders is nil (legacy callers that did not build
 // per-route reload infrastructure), /admin/reload is not mounted
 // and POSTs return 404. See ADR-0011's follow-up commit.
-func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHolder, gw guardrailsWire, mw metricsWiring, log *jsonlog.Logger) http.Handler {
+func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHolder, gw guardrailsWire, mw metricsWiring, log *jsonlog.Logger, env string) http.Handler {
 	var decideDecider markup.Decider = r
 	if tracer != nil {
 		decideDecider = mkotel.Wrap(decideDecider, tracer, mkotel.WithSpanName("markup.engine.evaluate"))
@@ -370,7 +371,7 @@ func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHol
 		}
 	}
 	if tracer != nil {
-		decideDecider = mkotel.Wrap(decideDecider, tracer, mkotel.WithSpanKind(trace.SpanKindServer))
+		decideDecider = mkotel.Wrap(decideDecider, tracer, mkotel.WithSpanKind(trace.SpanKindServer), mkotel.WithEnv(env))
 	}
 	// metrics decorator goes OUTERMOST so Duration captures the
 	// full stack including tracing overhead (per ADR-0010's
@@ -394,7 +395,7 @@ func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHol
 	mux.Handle("/healthz", httpapi.Healthz())
 	mux.Handle("/readyz", httpapi.Readyz(isReady))
 	markReady()
-	return httpapi.WithCorrelationID(httpapi.WithTraceContext(httpapi.WithAccessLog(log, mux)))
+	return httpapi.WithCorrelationID(httpapi.WithTraceContext(httpapi.WithAccessLog(log, env, mux)))
 }
 
 // routeHolder bundles a route's ModelVersion with its swap.Decider
@@ -528,7 +529,7 @@ func buildRoutes(specs routeFlagList, stderr io.Writer) ([]router.Route, []route
 // holder's inner still flows through the traced layer and continues
 // emitting spans. The /admin/reload route keeps calling holder.Swap
 // directly -- swaps are administrative, not user traffic.
-func wireTracedHandler(loader httpapi.Loader, body httpapi.ReloadBodyLoader, tracer trace.Tracer, gw guardrailsWire, mw metricsWiring, log *jsonlog.Logger, diagnoseFn httpapi.DiagnoseFn, shadowAdmin bool, shadowSampleRate float64, shadowTimeout time.Duration) (http.Handler, httpapi.ReloadResult, error) {
+func wireTracedHandler(loader httpapi.Loader, body httpapi.ReloadBodyLoader, tracer trace.Tracer, gw guardrailsWire, mw metricsWiring, log *jsonlog.Logger, diagnoseFn httpapi.DiagnoseFn, shadowAdmin bool, shadowSampleRate float64, shadowTimeout time.Duration, env string) (http.Handler, httpapi.ReloadResult, error) {
 	initial, result, err := loader()
 	if err != nil {
 		return nil, httpapi.ReloadResult{}, err
@@ -545,7 +546,7 @@ func wireTracedHandler(loader httpapi.Loader, body httpapi.ReloadBodyLoader, tra
 		}
 	}
 	if tracer != nil {
-		decideDecider = mkotel.Wrap(decideDecider, tracer, mkotel.WithSpanKind(trace.SpanKindServer))
+		decideDecider = mkotel.Wrap(decideDecider, tracer, mkotel.WithSpanKind(trace.SpanKindServer), mkotel.WithEnv(env))
 	}
 	if mw.sink != nil {
 		decideDecider = mkmetrics.Wrap(decideDecider, mw.sink)
@@ -590,7 +591,7 @@ func wireTracedHandler(loader httpapi.Loader, body httpapi.ReloadBodyLoader, tra
 	mux.Handle("/healthz", httpapi.Healthz())
 	mux.Handle("/readyz", httpapi.Readyz(isReady))
 	markReady()
-	return httpapi.WithCorrelationID(httpapi.WithTraceContext(httpapi.WithAccessLog(log, mux))), result, nil
+	return httpapi.WithCorrelationID(httpapi.WithTraceContext(httpapi.WithAccessLog(log, env, mux))), result, nil
 }
 
 // snapshotLoader is the boot-time-capturing loader for the --snapshot

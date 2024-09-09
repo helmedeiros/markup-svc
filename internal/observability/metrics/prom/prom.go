@@ -26,50 +26,57 @@ type Sink struct {
 
 // ShadowSink implements httpapi.ShadowMetrics. Shares the same
 // private registry as Sink so /metrics exposes Decide + shadow
-// counters from one scrape.
+// counters from one scrape. The env label is prepended to every
+// emission so a multi-env scrape job can be sliced per environment
+// at query time (ADR-0034).
 type ShadowSink struct {
-	agreement      *prometheus.CounterVec
-	oneSided       *prometheus.CounterVec
-	timeouts       prometheus.Counter
-	errs           prometheus.Counter
-	factorDelta    prometheus.Histogram
-	sampled        *prometheus.CounterVec
-	duration       prometheus.Histogram
+	env         string
+	agreement   *prometheus.CounterVec
+	oneSided    *prometheus.CounterVec
+	timeouts    *prometheus.CounterVec
+	errs        *prometheus.CounterVec
+	factorDelta *prometheus.HistogramVec
+	sampled     *prometheus.CounterVec
+	duration    *prometheus.HistogramVec
 }
 
 // RecordAgreement implements httpapi.ShadowMetrics.
 func (s *ShadowSink) RecordAgreement(agree bool) {
 	if agree {
-		s.agreement.WithLabelValues("true").Inc()
+		s.agreement.WithLabelValues(s.env, "true").Inc()
 	} else {
-		s.agreement.WithLabelValues("false").Inc()
+		s.agreement.WithLabelValues(s.env, "false").Inc()
 	}
 }
 
 // RecordOneSided implements httpapi.ShadowMetrics.
-func (s *ShadowSink) RecordOneSided(side string) { s.oneSided.WithLabelValues(side).Inc() }
+func (s *ShadowSink) RecordOneSided(side string) {
+	s.oneSided.WithLabelValues(s.env, side).Inc()
+}
 
 // RecordTimeout implements httpapi.ShadowMetrics.
-func (s *ShadowSink) RecordTimeout() { s.timeouts.Inc() }
+func (s *ShadowSink) RecordTimeout() { s.timeouts.WithLabelValues(s.env).Inc() }
 
 // RecordError implements httpapi.ShadowMetrics.
-func (s *ShadowSink) RecordError() { s.errs.Inc() }
+func (s *ShadowSink) RecordError() { s.errs.WithLabelValues(s.env).Inc() }
 
 // RecordFactorDelta implements httpapi.ShadowMetrics.
-func (s *ShadowSink) RecordFactorDelta(delta float64) { s.factorDelta.Observe(delta) }
+func (s *ShadowSink) RecordFactorDelta(delta float64) {
+	s.factorDelta.WithLabelValues(s.env).Observe(delta)
+}
 
 // RecordSampled implements httpapi.ShadowMetrics.
 func (s *ShadowSink) RecordSampled(sampled bool) {
 	if sampled {
-		s.sampled.WithLabelValues("true").Inc()
+		s.sampled.WithLabelValues(s.env, "true").Inc()
 	} else {
-		s.sampled.WithLabelValues("false").Inc()
+		s.sampled.WithLabelValues(s.env, "false").Inc()
 	}
 }
 
 // RecordChallengerDuration implements httpapi.ShadowMetrics.
 func (s *ShadowSink) RecordChallengerDuration(d time.Duration) {
-	s.duration.Observe(d.Seconds())
+	s.duration.WithLabelValues(s.env).Observe(d.Seconds())
 }
 
 // shadowFactorDeltaBuckets cover the realistic markup-factor delta
@@ -114,7 +121,10 @@ var decideBuckets = []float64{
 // the histogram is mostly informative at the lower end. A
 // custom-buckets ADR can land if production tail-latency
 // investigation needs different breakpoints.
-func New() (*Sink, *ShadowSink, http.Handler) {
+func New(env string) (*Sink, *ShadowSink, http.Handler) {
+	if env == "" {
+		env = "default"
+	}
 	reg := prometheus.NewRegistry()
 	count := prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -134,46 +144,59 @@ func New() (*Sink, *ShadowSink, http.Handler) {
 	shadowAgree := prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "markup_challenger_agreement_total",
-			Help: "Shadow Decider comparison outcomes (ADR-0032). agree=true|false; both-decline counts as agree=true.",
+			Help: "Shadow Decider comparison outcomes (ADR-0032). agree=true|false; both-decline counts as agree=true. env per ADR-0034.",
 		},
-		[]string{"agree"},
+		[]string{"env", "agree"},
 	)
 	shadowOneSided := prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "markup_challenger_one_sided_total",
-			Help: "Shadow comparison where exactly one of champion/challenger fired (ADR-0032). side=champion_only|challenger_only.",
+			Help: "Shadow comparison where exactly one of champion/challenger fired (ADR-0032). side=champion_only|challenger_only. env per ADR-0034.",
 		},
-		[]string{"side"},
+		[]string{"env", "side"},
 	)
-	shadowTimeouts := prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "markup_challenger_eval_timeout_total",
-		Help: "Shadow Decider missed its evaluation deadline (ADR-0032).",
-	})
-	shadowErrs := prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "markup_challenger_eval_errors_total",
-		Help: "Shadow Decider returned a non-ErrNoMatch error (ADR-0032).",
-	})
-	shadowDelta := prometheus.NewHistogram(prometheus.HistogramOpts{
-		Name:    "markup_challenger_factor_delta",
-		Help:    "abs(champion_factor - challenger_factor) recorded only on disagreement (ADR-0032).",
-		Buckets: shadowFactorDeltaBuckets,
-	})
+	shadowTimeouts := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "markup_challenger_eval_timeout_total",
+			Help: "Shadow Decider missed its evaluation deadline (ADR-0032). env per ADR-0034.",
+		},
+		[]string{"env"},
+	)
+	shadowErrs := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "markup_challenger_eval_errors_total",
+			Help: "Shadow Decider returned a non-ErrNoMatch error (ADR-0032). env per ADR-0034.",
+		},
+		[]string{"env"},
+	)
+	shadowDelta := prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "markup_challenger_factor_delta",
+			Help:    "abs(champion_factor - challenger_factor) recorded only on disagreement (ADR-0032). env per ADR-0034.",
+			Buckets: shadowFactorDeltaBuckets,
+		},
+		[]string{"env"},
+	)
 	shadowSampled := prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "markup_challenger_sampled_total",
-			Help: "Per /decide call where a challenger is loaded, whether the sample check selected the request (sampled=true|false). Effective comparison rate = true / (true + false) (ADR-0033).",
+			Help: "Per /decide call where a challenger is loaded, whether the sample check selected the request (sampled=true|false). Effective comparison rate = true / (true + false) (ADR-0033). env per ADR-0034.",
 		},
-		[]string{"sampled"},
+		[]string{"env", "sampled"},
 	)
-	shadowDuration := prometheus.NewHistogram(prometheus.HistogramOpts{
-		Name:    "markup_challenger_decide_duration_seconds",
-		Help:    "Wall-clock cost of one challenger Decide call (ADR-0033 perf-measurement use case). Buckets match markup_decide_duration_seconds so champion / challenger latencies are directly comparable.",
-		Buckets: decideBuckets,
-	})
+	shadowDuration := prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "markup_challenger_decide_duration_seconds",
+			Help:    "Wall-clock cost of one challenger Decide call (ADR-0033). Buckets match markup_decide_duration_seconds so champion / challenger latencies are directly comparable. env per ADR-0034.",
+			Buckets: decideBuckets,
+		},
+		[]string{"env"},
+	)
 	reg.MustRegister(count, dur, shadowAgree, shadowOneSided, shadowTimeouts, shadowErrs, shadowDelta, shadowSampled, shadowDuration)
 	handler := promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
 	return &Sink{count: count, dur: dur},
 		&ShadowSink{
+			env:       env,
 			agreement: shadowAgree, oneSided: shadowOneSided,
 			timeouts: shadowTimeouts, errs: shadowErrs,
 			factorDelta: shadowDelta, sampled: shadowSampled,

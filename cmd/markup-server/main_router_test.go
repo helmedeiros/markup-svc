@@ -65,7 +65,7 @@ func TestE2ERouterAsymmetryOverHTTP(t *testing.T) {
 		t.Fatalf("pickRouterPolicy: %v", err)
 	}
 	r := router.New(routes, policy)
-	srv := httptest.NewServer(wireRouterHandler(r, nil, holders, guardrailsWire{}, metricsWiring{}, nil))
+	srv := httptest.NewServer(wireRouterHandler(r, nil, holders, guardrailsWire{}, metricsWiring{}, nil, ""))
 	t.Cleanup(srv.Close)
 
 	// Find two correlation IDs that the hash sends to different routes
@@ -111,7 +111,7 @@ func TestE2ERouterStickyByCorrelationIDOverHTTP(t *testing.T) {
 	}
 	policy, _ := pickRouterPolicy("hash-correlation")
 	r := router.New(routes, policy)
-	srv := httptest.NewServer(wireRouterHandler(r, nil, holders, guardrailsWire{}, metricsWiring{}, nil))
+	srv := httptest.NewServer(wireRouterHandler(r, nil, holders, guardrailsWire{}, metricsWiring{}, nil, ""))
 	t.Cleanup(srv.Close)
 
 	first := decideRouterFactor(t, srv.URL, "trace-sticky-1")
@@ -139,7 +139,7 @@ func TestE2ERouterReloadWithoutHoldersReturns404(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := router.New(routes, router.DefaultPolicy{})
-	srv := httptest.NewServer(wireRouterHandler(r, nil, nil, guardrailsWire{}, metricsWiring{}, nil))
+	srv := httptest.NewServer(wireRouterHandler(r, nil, nil, guardrailsWire{}, metricsWiring{}, nil, ""))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Post(srv.URL+"/admin/reload", "application/json", nil)
@@ -172,7 +172,7 @@ func TestE2ERouterPerRouteReloadOverHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := router.New(routes, router.DefaultPolicy{})
-	srv := httptest.NewServer(wireRouterHandler(r, nil, holders, guardrailsWire{}, metricsWiring{}, nil))
+	srv := httptest.NewServer(wireRouterHandler(r, nil, holders, guardrailsWire{}, metricsWiring{}, nil, ""))
 	t.Cleanup(srv.Close)
 
 	// DefaultPolicy always picks the first route (v1); we need to
@@ -236,7 +236,7 @@ func TestE2ERouterReloadUnknownModelReturns404(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := router.New(routes, router.DefaultPolicy{})
-	srv := httptest.NewServer(wireRouterHandler(r, nil, holders, guardrailsWire{}, metricsWiring{}, nil))
+	srv := httptest.NewServer(wireRouterHandler(r, nil, holders, guardrailsWire{}, metricsWiring{}, nil, ""))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Post(srv.URL+"/admin/reload", "application/json",
@@ -261,7 +261,7 @@ func TestE2ERouterReloadMalformedBodyReturns400(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := router.New(routes, router.DefaultPolicy{})
-	srv := httptest.NewServer(wireRouterHandler(r, nil, holders, guardrailsWire{}, metricsWiring{}, nil))
+	srv := httptest.NewServer(wireRouterHandler(r, nil, holders, guardrailsWire{}, metricsWiring{}, nil, ""))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Post(srv.URL+"/admin/reload", "application/json",
@@ -286,7 +286,7 @@ func TestE2ERouterReloadFailingLoaderReturns500AndKeepsOldDecider(t *testing.T) 
 		t.Fatal(err)
 	}
 	r := router.New(routes, router.DefaultPolicy{})
-	srv := httptest.NewServer(wireRouterHandler(r, nil, holders, guardrailsWire{}, metricsWiring{}, nil))
+	srv := httptest.NewServer(wireRouterHandler(r, nil, holders, guardrailsWire{}, metricsWiring{}, nil, ""))
 	t.Cleanup(srv.Close)
 
 	// Corrupt the v1 CSV so the loader fails on reload.
@@ -324,7 +324,7 @@ func TestE2ERouterReloadGetMethodReturns405(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := router.New(routes, router.DefaultPolicy{})
-	srv := httptest.NewServer(wireRouterHandler(r, nil, holders, guardrailsWire{}, metricsWiring{}, nil))
+	srv := httptest.NewServer(wireRouterHandler(r, nil, holders, guardrailsWire{}, metricsWiring{}, nil, ""))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/admin/reload")
@@ -478,7 +478,7 @@ func TestE2ERouterModeGuardrailsAdminMounts(t *testing.T) {
 	// Admin enabled, no boot rules -- the Holder starts empty, both
 	// routes pass everything until the admin POST tightens.
 	gw := buildGuardrailsWiring(true, nil, io.Discard)
-	srv := httptest.NewServer(wireRouterHandler(r, nil, holders, gw, metricsWiring{}, nil))
+	srv := httptest.NewServer(wireRouterHandler(r, nil, holders, gw, metricsWiring{}, nil, ""))
 	t.Cleanup(srv.Close)
 
 	// Probe baseline: both routes produce factors (1.10 and 1.50 in

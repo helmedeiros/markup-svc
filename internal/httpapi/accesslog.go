@@ -15,7 +15,9 @@ import (
 // WithAccessLog returns middleware that emits one JSON event per
 // request as "markup-server.access" with attrs {method, path, status,
 // duration_ms, correlation_id, trace_id, span_id}. See ADR-0021.
-func WithAccessLog(l *jsonlog.Logger, next http.Handler) http.Handler {
+// When env is non-empty, attrs.env carries the process-level
+// environment identifier (ADR-0034).
+func WithAccessLog(l *jsonlog.Logger, env string, next http.Handler) http.Handler {
 	if l == nil {
 		return next
 	}
@@ -28,6 +30,9 @@ func WithAccessLog(l *jsonlog.Logger, next http.Handler) http.Handler {
 			"path":        r.URL.Path,
 			"status":      sw.status,
 			"duration_ms": float64(time.Since(start)) / float64(time.Millisecond),
+		}
+		if env != "" {
+			attrs["env"] = env
 		}
 		if cid := breengine.CorrelationIDFromContext(r.Context()); cid != "" {
 			attrs["correlation_id"] = cid

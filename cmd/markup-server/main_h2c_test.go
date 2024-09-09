@@ -24,7 +24,7 @@ func TestE2EH2CServerAcceptsHTTP2PriorKnowledge(t *testing.T) {
 		t.Fatal(err)
 	}
 	loader := rulesLoader(rulesPath, "inmemory", "v0-h2c", io.Discard)
-	handler, _, err := wireTracedHandler(loader, nil, nil, guardrailsWire{}, metricsWiring{}, nil, nil, false, 1.0, 0)
+	handler, _, err := wireTracedHandler(loader, nil, nil, guardrailsWire{}, metricsWiring{}, nil, nil, false, 1.0, 0, "")
 	if err != nil {
 		t.Fatalf("wireTracedHandler: %v", err)
 	}
