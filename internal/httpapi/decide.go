@@ -81,6 +81,9 @@ func Decide(d markup.Decider, opts ...DecideOption) http.Handler {
 	if cfg.timeout == 0 {
 		cfg.timeout = DefaultShadowTimeout
 	}
+	if cfg.decisionIDSource == nil {
+		cfg.decisionIDSource = newDecisionID
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
@@ -94,20 +97,30 @@ func Decide(d markup.Decider, opts ...DecideOption) http.Handler {
 		}
 		req := dr.toMarkupRequest()
 		ctx := r.Context()
+		decisionID := cfg.decisionIDSource()
 		decision, err := d.Decide(ctx, req)
 		dispatchShadow(ctx, cfg, req, decision, err)
-		if err != nil {
-			if errors.Is(err, markup.ErrNoMatch) {
-				*r = *r.WithContext(withDecisionContext(ctx, decisionLogEntry{request: req, noMatch: true}))
-				writeError(w, http.StatusNotFound, "no rule matched")
-				return
-			}
-			writeError(w, http.StatusInternalServerError, "internal")
-			return
+		outcome, errorMsg := outcomeFor(err)
+		entry := decisionLogEntry{
+			request: req, decisionID: decisionID,
+			outcome: outcome, errorMsg: errorMsg,
 		}
-		*r = *r.WithContext(withDecisionContext(ctx, decisionLogEntry{request: req, decision: decision}))
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(fromDecision(decision))
+		switch outcome {
+		case "ok":
+			entry.decision = decision
+		case "no_match":
+			entry.noMatch = true
+		}
+		*r = *r.WithContext(withDecisionContext(ctx, entry))
+		switch outcome {
+		case "ok":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(fromDecision(decision))
+		case "no_match":
+			writeError(w, http.StatusNotFound, "no rule matched")
+		default:
+			writeError(w, http.StatusInternalServerError, "internal")
+		}
 	})
 }
 

@@ -63,13 +63,14 @@ func (NoopShadowMetrics) RecordChallengerDuration(time.Duration) {}
 type DecideOption func(*decideConfig)
 
 type decideConfig struct {
-	shadow     ChallengerHolder
-	metrics    ShadowMetrics
-	timeout    time.Duration
-	tracer     trace.Tracer
-	sampleRate float64
-	sampler    func() float64
-	shadowLog  *jsonlog.Logger
+	shadow           ChallengerHolder
+	metrics          ShadowMetrics
+	timeout          time.Duration
+	tracer           trace.Tracer
+	sampleRate       float64
+	sampler          func() float64
+	shadowLog        *jsonlog.Logger
+	decisionIDSource func() string
 }
 
 // WithShadow wires the challenger Holder, metrics sink, timeout, and
@@ -104,6 +105,13 @@ func WithShadowSampler(sample func() float64) DecideOption {
 // pivot through the saved Kibana searches in pricing-observability.
 func WithShadowLogger(l *jsonlog.Logger) DecideOption {
 	return func(c *decideConfig) { c.shadowLog = l }
+}
+
+// WithDecisionIDSource overrides the default per-decision ID minter
+// (32-char hex from crypto/rand). Tests inject a deterministic stub;
+// production uses the default. Per ADR-0035.
+func WithDecisionIDSource(fn func() string) DecideOption {
+	return func(c *decideConfig) { c.decisionIDSource = fn }
 }
 
 // evaluateChallenger compares one champion result against the

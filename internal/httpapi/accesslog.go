@@ -17,6 +17,11 @@ import (
 // duration_ms, correlation_id, trace_id, span_id}. See ADR-0021.
 // When env is non-empty, attrs.env carries the process-level
 // environment identifier (ADR-0034).
+//
+// When the inner handler populated decisionLogEntry, the middleware
+// also emits a parallel "markup.decision.v1" event carrying the
+// ADR-0035 contract. The two events share the same logger and
+// correlation identity; downstream consumers filter by msg.
 func WithAccessLog(l *jsonlog.Logger, env string, next http.Handler) http.Handler {
 	if l == nil {
 		return next
@@ -25,27 +30,38 @@ func WithAccessLog(l *jsonlog.Logger, env string, next http.Handler) http.Handle
 		start := time.Now()
 		sw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
+		durationMS := float64(time.Since(start)) / float64(time.Millisecond)
+		ctx := r.Context()
+		cid := breengine.CorrelationIDFromContext(ctx)
+		var traceID, spanID string
+		if sc := oteltrace.SpanContextFromContext(ctx); sc.IsValid() {
+			traceID = sc.TraceID().String()
+			spanID = sc.SpanID().String()
+		}
 		attrs := map[string]any{
 			"method":      r.Method,
 			"path":        r.URL.Path,
 			"status":      sw.status,
-			"duration_ms": float64(time.Since(start)) / float64(time.Millisecond),
+			"duration_ms": durationMS,
 		}
 		if env != "" {
 			attrs["env"] = env
 		}
-		if cid := breengine.CorrelationIDFromContext(r.Context()); cid != "" {
+		if cid != "" {
 			attrs["correlation_id"] = cid
 		}
-		if sc := oteltrace.SpanContextFromContext(r.Context()); sc.IsValid() {
-			attrs["trace_id"] = sc.TraceID().String()
-			attrs["span_id"] = sc.SpanID().String()
+		if traceID != "" {
+			attrs["trace_id"] = traceID
+			attrs["span_id"] = spanID
 		}
-		if d, ok := decisionFromContext(r.Context()); ok {
-			attrs["input"] = inputFields(d.request)
+		d, hasDecision := decisionFromContext(ctx)
+		var ctxFields map[string]any
+		if hasDecision {
+			ctxFields = inputFields(d.request)
+			attrs["input"] = ctxFields
 			if d.noMatch {
 				attrs["no_match"] = true
-			} else {
+			} else if d.outcome == "" || d.outcome == "ok" {
 				attrs["rule"] = d.decision.Rule
 				attrs["markup_factor"] = d.decision.MarkupFactor
 				attrs["model_version"] = d.decision.ModelVersion
@@ -56,7 +72,50 @@ func WithAccessLog(l *jsonlog.Logger, env string, next http.Handler) http.Handle
 			}
 		}
 		l.Info("markup-server.access", attrs)
+		// markup.decision.v1 (ADR-0035) emits only when the Decide
+		// handler populated decisionID; a test that constructs a
+		// decisionLogEntry directly does not trigger the new event.
+		if hasDecision && d.decisionID != "" {
+			l.Info("markup.decision.v1", decisionEventAttrs(d, env, durationMS, start, cid, traceID, spanID, ctxFields))
+		}
 	})
+}
+
+// decisionEventAttrs builds the ADR-0035 markup.decision.v1 attribute
+// set. ts is the request start (the closest time we have to "when the
+// decision was made"); duration_ms is the full /decide handler
+// envelope, matching the access-log semantic. Every field in the v1
+// schema is emitted explicitly — empty strings and zero floats are
+// stable columns for downstream batch consumers (Spark / Snowflake),
+// not sparse keys.
+func decisionEventAttrs(d decisionLogEntry, env string, durationMS float64, start time.Time, cid, traceID, spanID string, context map[string]any) map[string]any {
+	attrs := map[string]any{
+		"schema_version":  "1.0.0",
+		"decision_id":     d.decisionID,
+		"ts":              start.UTC().Format(time.RFC3339Nano),
+		"env":             env,
+		"decide_outcome":  d.outcome,
+		"duration_ms":     durationMS,
+		"correlation_id":  cid,
+		"trace_id":        traceID,
+		"span_id":         spanID,
+		"error":           d.errorMsg,
+		"request_context": context,
+	}
+	if d.outcome == "ok" {
+		attrs["model_version"] = d.decision.ModelVersion
+		attrs["experiment"] = d.decision.Experiment
+		attrs["engine_adapter"] = d.decision.EngineAdapter
+		attrs["rule"] = d.decision.Rule
+		attrs["markup_factor"] = d.decision.MarkupFactor
+	} else {
+		attrs["model_version"] = ""
+		attrs["experiment"] = ""
+		attrs["engine_adapter"] = ""
+		attrs["rule"] = ""
+		attrs["markup_factor"] = 0.0
+	}
+	return attrs
 }
 
 func inputFields(r markup.Request) map[string]any {

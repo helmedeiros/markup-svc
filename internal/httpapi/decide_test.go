@@ -1,6 +1,7 @@
 package httpapi_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/helmedeiros/markup-svc/internal/httpapi"
+	"github.com/helmedeiros/markup-svc/internal/jsonlog"
 	"github.com/helmedeiros/markup-svc/internal/markup"
 )
 
@@ -143,4 +145,134 @@ func TestDecideEmptyBodyReturns400(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
 	}
+}
+
+// TestDecide_DefaultDecisionIDIs32CharHex pins the ADR-0035 default
+// ID format. The handler's default newDecisionID() returns 16 bytes
+// hex-encoded; observability tools rely on a stable parser.
+func TestDecide_DefaultDecisionIDIs32CharHex(t *testing.T) {
+	stub := &stubDecider{decision: markup.Decision{MarkupFactor: 1.0, Rule: "x", ModelVersion: "v1", EngineAdapter: "*x.Engine"}}
+	attrs := captureDecisionEvent(t, httpapi.Decide(stub), `{"country":"DE"}`)
+	got, _ := attrs["decision_id"].(string)
+	if len(got) != 32 {
+		t.Fatalf("decision_id length = %d, want 32 (16-byte hex); got %q", len(got), got)
+	}
+	for _, c := range got {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			t.Fatalf("decision_id %q contains non-hex %q", got, c)
+		}
+	}
+}
+
+// TestDecide_WithDecisionIDSourceInjectsValue confirms tests can pin
+// a deterministic ID per the ADR-0035 option contract.
+func TestDecide_WithDecisionIDSourceInjectsValue(t *testing.T) {
+	stub := &stubDecider{decision: markup.Decision{MarkupFactor: 1.0, Rule: "x", ModelVersion: "v1", EngineAdapter: "*x.Engine"}}
+	h := httpapi.Decide(stub, httpapi.WithDecisionIDSource(func() string { return "det-fixed-42" }))
+	attrs := captureDecisionEvent(t, h, `{"country":"DE"}`)
+	if attrs["decision_id"] != "det-fixed-42" {
+		t.Fatalf("decision_id = %v, want det-fixed-42", attrs["decision_id"])
+	}
+}
+
+// TestDecide_OutcomeMapsAcrossErrorPaths pins decide_outcome semantics
+// per ADR-0035: ok | no_match | canceled | deadline_exceeded | error.
+func TestDecide_OutcomeMapsAcrossErrorPaths(t *testing.T) {
+	cases := []struct {
+		name     string
+		decision markup.Decision
+		err      error
+		wantOut  string
+		wantHTTP int
+		wantErr  bool
+	}{
+		{"ok", markup.Decision{MarkupFactor: 1.0, Rule: "x", ModelVersion: "v1", EngineAdapter: "*x.Engine"}, nil, "ok", http.StatusOK, false},
+		{"no_match", markup.Decision{}, markup.ErrNoMatch, "no_match", http.StatusNotFound, false},
+		{"canceled", markup.Decision{}, context.Canceled, "canceled", http.StatusInternalServerError, true},
+		{"deadline", markup.Decision{}, context.DeadlineExceeded, "deadline_exceeded", http.StatusInternalServerError, true},
+		{"error", markup.Decision{}, errors.New("boom"), "error", http.StatusInternalServerError, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := &stubDecider{decision: tc.decision, err: tc.err}
+			h := httpapi.Decide(stub, httpapi.WithDecisionIDSource(func() string { return "det-x" }))
+			attrs, rec := captureDecisionEventAndStatus(t, h, `{"country":"DE"}`)
+			if rec != tc.wantHTTP {
+				t.Errorf("HTTP = %d, want %d", rec, tc.wantHTTP)
+			}
+			if attrs["decide_outcome"] != tc.wantOut {
+				t.Errorf("decide_outcome = %v, want %v", attrs["decide_outcome"], tc.wantOut)
+			}
+			if tc.wantErr && attrs["error"] == "" {
+				t.Errorf("error attr should be populated on %s; got empty", tc.name)
+			}
+			if !tc.wantErr && attrs["error"] != "" {
+				t.Errorf("error attr should be empty on %s; got %v", tc.name, attrs["error"])
+			}
+		})
+	}
+}
+
+// TestDecide_EmptyDecisionIDSuppressesEvent pins the silent-skip
+// contract: if the IDSource returns "", the markup.decision.v1 event
+// is not emitted but the HTTP response succeeds normally. Crypto/rand
+// failure on a degraded host falls through this path.
+func TestDecide_EmptyDecisionIDSuppressesEvent(t *testing.T) {
+	stub := &stubDecider{decision: markup.Decision{MarkupFactor: 1.0, Rule: "x", ModelVersion: "v1", EngineAdapter: "*x.Engine"}}
+	var buf bytes.Buffer
+	l := jsonlog.New(&buf)
+	h := httpapi.WithAccessLog(l, "test", httpapi.Decide(stub, httpapi.WithDecisionIDSource(func() string { return "" })))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/decide", strings.NewReader(`{"country":"DE"}`))
+	req.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("HTTP = %d, want 200", rec.Code)
+	}
+	dec := json.NewDecoder(&buf)
+	var events []map[string]any
+	for dec.More() {
+		var m map[string]any
+		_ = dec.Decode(&m)
+		events = append(events, m)
+	}
+	for _, e := range events {
+		if e["msg"] == "markup.decision.v1" {
+			t.Fatalf("markup.decision.v1 should not emit when decisionID is empty; got %v", e)
+		}
+	}
+}
+
+// captureDecisionEvent boots the Decide handler behind the access-log
+// middleware, posts the body, and returns the markup.decision.v1 attrs.
+func captureDecisionEvent(t *testing.T, decide http.Handler, body string) map[string]any {
+	attrs, _ := captureDecisionEventAndStatus(t, decide, body)
+	return attrs
+}
+
+func captureDecisionEventAndStatus(t *testing.T, decide http.Handler, body string) (map[string]any, int) {
+	t.Helper()
+	var buf bytes.Buffer
+	l := jsonlog.New(&buf)
+	h := httpapi.WithAccessLog(l, "test", decide)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/decide", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rec, req)
+	dec := json.NewDecoder(&buf)
+	var events []map[string]any
+	for dec.More() {
+		var m map[string]any
+		if err := dec.Decode(&m); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		events = append(events, m)
+	}
+	for _, e := range events {
+		if e["msg"] == "markup.decision.v1" {
+			return e["attrs"].(map[string]any), rec.Code
+		}
+	}
+	t.Fatalf("markup.decision.v1 event not emitted; events=%v", events)
+	return nil, 0
 }

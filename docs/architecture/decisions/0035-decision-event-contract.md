@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — lock the schema for `markup.decision.v1`, emit it as a dedicated structured-log event from the access-log middleware (reading the same `decisionLogEntry` already populated by the `/decide` handler), running in parallel with the existing `markup-server.access` event until a follow-on access-log-slimming ADR removes the duplicated decision attrs. Operator confirmation needed on the parallel-emission migration shape and on the resolved field set (Decision section) before this ADR flips to Accepted.
+Accepted — lock the schema for `markup.decision.v1`. The event emits from the access-log middleware (reading the same `decisionLogEntry` already populated by the `/decide` handler), running in parallel with the existing `markup-server.access` event until a follow-on access-log-slimming ADR removes the duplicated decision attrs. `decision_id` is a 32-character hex-encoded 128-bit random ID minted from `crypto/rand`; the format is documented as opaque for downstream consumers so the implementation can swap to ULID or UUID later without a schema bump.
 
 ## Context
 
@@ -30,7 +30,7 @@ A versioned JSON schema for one decision event:
 ```jsonc
 {
   "schema_version": "1.0.0",            // SemVer; additive minor, breaking major
-  "decision_id": "01J9Z2K7N6XJVQEA…",   // ULID, minted in /decide handler
+  "decision_id": "a1b2c3d4e5f60718…",   // opaque per-decision ID (default: 32 hex chars, 128-bit from crypto/rand); minted in /decide handler
   "ts": "2024-09-12T10:42:00.123456Z",  // RFC 3339 UTC, microsecond precision
   "env": "production",                  // ADR-0034 process-level env
 
@@ -74,7 +74,7 @@ Empty-string and zero-value fields are emitted explicitly so a downstream batch 
 
 A new structured-log event named `markup.decision.v1`. The `WithAccessLog` middleware (extended) reads the existing `decisionFromContext` lookup and, after the inner handler returns, emits the decision event in addition to the existing `markup-server.access` event. Both events run through the same `jsonlog.Logger`. The handler's responsibilities do not grow: it keeps populating `decisionLogEntry` exactly as today (per ADR-0023). The emission seam stays in middleware.
 
-`decision_id` is minted in the `/decide` handler — earliest point where a decision exists — and stored on a new `decisionID string` field on `internal/httpapi.decisionLogEntry` (the same struct the middleware already reads via `decisionFromContext` under the private `decisionLogKey{}` context key). The handler accepts a new `httpapi.WithDecisionIDSource(fn func() string) DecideOption`, mirroring the existing `WithShadow` / `WithShadowLogger` / `WithReloadBodyLoader` pattern. `cmd/markup-server` wires `ulid.Make()` as the default source; tests inject a deterministic stub.
+`decision_id` is minted in the `/decide` handler — earliest point where a decision exists — and stored on a new `decisionID string` field on `internal/httpapi.decisionLogEntry` (the same struct the middleware already reads via `decisionFromContext` under the private `decisionLogKey{}` context key). The handler accepts a new `httpapi.WithDecisionIDSource(fn func() string) DecideOption`, mirroring the existing `WithShadow` / `WithShadowLogger` / `WithReloadBodyLoader` pattern. The default source is an unexported `newDecisionID()` function that reads 16 bytes from `crypto/rand` and hex-encodes them; tests inject a deterministic stub. No new external dependency is introduced.
 
 ### Event-name versioning
 
@@ -121,8 +121,8 @@ For the release window covering this ADR's Accepted flip through the access-log-
 
 - Doubles log volume on the `/decide` path during the migration window. At 2000 QPS × ~500 B/event × 2 events = ~2 MB/sec sustained. Filebeat / Elasticsearch handle that; flagged for operators with tight log-storage budgets.
 - Breaking change for any consumer that explicitly enumerated the `markup-server.access` decision attrs at the end of the migration window. Mitigation: explicit deprecation list in the access-log-slimming ADR; pricing-observability's Kibana saved searches updated as part of that ADR's implementation.
-- The `decision_id` ULID mint adds one allocation per `/decide` call. The ULID source's existing benchmarks in `internal/ulid` show ~80 ns/op on amd64; bounded.
-- The middleware now branches on `decisionFromContext` to emit two events instead of one. The second `l.Info` call doubles the per-Decide structured-log emission cost; bounded by the same jsonlog throughput.
+- The `decision_id` mint adds one `crypto/rand.Read(16 bytes)` syscall and one hex-encode per `/decide` call. The exact per-call cost is unmeasured at the time of this ADR; a scientific-harness bar pre-registration is parked for a follow-on commit per ADR-0012 protocol.
+- The middleware now branches on `decisionFromContext` to emit two events instead of one. The second `l.Info` call doubles the per-Decide structured-log emission cost. `decisionEventAttrs` allocates one `map[string]any` per emission (~14 keys) plus reuses the access-log `inputFields` map for the `request_context` sub-object to avoid a second nested allocation. Honest qualifier: the per-Decide cost of the dual emission is not yet measured against a pre-registered bar; the follow-on scientific harness commit covers it.
 
 ## References
 

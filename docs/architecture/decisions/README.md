@@ -52,4 +52,4 @@ NNNN-short-decision-name.md
 | [0032](0032-shadow-decide-execution.md) | Shadow /decide execution — run champion + challenger in parallel | ✅ Accepted |
 | [0033](0033-shadow-sample-rate.md) | Shadow sample rate — operator-tunable comparison frequency | ✅ Accepted |
 | [0034](0034-env-label-on-shadow-metrics.md) | Env label on shadow metrics + access log + decide span | ✅ Accepted |
-| [0035](0035-decision-event-contract.md) | Decision-event contract — versioned schema for downstream consumers | 🚧 Proposed |
+| [0035](0035-decision-event-contract.md) | Decision-event contract — versioned schema for downstream consumers | ✅ Accepted |
