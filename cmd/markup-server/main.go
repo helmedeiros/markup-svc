@@ -36,6 +36,8 @@ import (
 	"github.com/helmedeiros/markup-svc/internal/jsonlog"
 	"github.com/helmedeiros/markup-svc/internal/load"
 	"github.com/helmedeiros/markup-svc/internal/markup"
+	"github.com/helmedeiros/markup-svc/internal/observability/decisionsink"
+	"github.com/helmedeiros/markup-svc/internal/observability/decisionsink/s3sink"
 	mkmetrics "github.com/helmedeiros/markup-svc/internal/observability/metrics"
 	mkprom "github.com/helmedeiros/markup-svc/internal/observability/metrics/prom"
 	mkotel "github.com/helmedeiros/markup-svc/internal/observability/otel"
@@ -80,6 +82,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	shadowSampleRate := fs.Float64("shadow-sample-rate", 1.0, "fraction of /decide calls that run the challenger comparison; 1.0 every request, 0.1 = 10%, 0.0 disables comparison while keeping the admin surface live (ADR-0033)")
 	shadowTimeout := fs.Duration("shadow-timeout", httpapi.DefaultShadowTimeout, "wall-clock deadline for one challenger evaluation. A challenger that misses this budget is counted as a timeout and the comparison is dropped. Tune via this flag when a slow challenger forces operators to choose between dropping samples (timeout rate climbs) or extending the budget; 0 falls back to the default 10ms.")
 	env := fs.String("env", "default", "stable environment identifier tagged onto every markup_challenger_* metric series, every markup-server.access JSON event, and the markup.decider.decide span (see ADR-0034). Operators set whatever their topology uses (production, staging, eu-west-1, tenant-acme, ...).")
+	decisionSink := fs.String("decision-sink", "", "enable a substrate sink for markup.decision.v1 events (ADR-0036). \"\" = NoopSink (no behaviour change); \"s3\" = the s3sink adapter writing gzipped JSONL to an S3-compatible bucket.")
+	decisionSinkEndpoint := fs.String("decision-sink-endpoint", "", "S3-compatible endpoint host:port for --decision-sink=s3. Empty = SDK default (real AWS). Set to e.g. minio:9000 against the compose-stack MinIO container.")
+	decisionSinkBucket := fs.String("decision-sink-bucket", "", "destination bucket for --decision-sink=s3. Required when the sink is enabled.")
+	decisionSinkRegion := fs.String("decision-sink-region", "us-east-1", "region for --decision-sink=s3.")
+	decisionSinkKeyPrefix := fs.String("decision-sink-key-prefix", "markup-decision-v1/", "object-key prefix for --decision-sink=s3. Trailing slash kept; downstream Hive-partition columns append after.")
+	decisionSinkAutoCreate := fs.Bool("decision-sink-bucket-auto-create", false, "when --decision-sink=s3, create the bucket if it does not exist. Defaults to fail-loud so a misconfigured endpoint cannot silently create the wrong bucket.")
+	decisionSinkUseSSL := fs.Bool("decision-sink-use-ssl", false, "use TLS for --decision-sink=s3. False for local MinIO; true for real S3 over the public Internet.")
+	decisionSinkAccessKey := fs.String("decision-sink-access-key", os.Getenv("AWS_ACCESS_KEY_ID"), "access key for --decision-sink=s3; defaults to $AWS_ACCESS_KEY_ID.")
+	decisionSinkSecretKey := fs.String("decision-sink-secret-key", os.Getenv("AWS_SECRET_ACCESS_KEY"), "secret key for --decision-sink=s3; defaults to $AWS_SECRET_ACCESS_KEY.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -121,6 +132,23 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 
 	log := jsonlog.New(stdout)
+
+	decisionSinkInstance, decisionSinkErr := buildDecisionSink(ctx, *decisionSink, decisionSinkFlags{
+		endpoint:   *decisionSinkEndpoint,
+		region:     *decisionSinkRegion,
+		bucket:     *decisionSinkBucket,
+		accessKey:  *decisionSinkAccessKey,
+		secretKey:  *decisionSinkSecretKey,
+		useSSL:     *decisionSinkUseSSL,
+		autoCreate: *decisionSinkAutoCreate,
+		keyPrefix:  *decisionSinkKeyPrefix,
+		env:        *env,
+		instance:   processInstance(),
+		logger:     log,
+	})
+	if decisionSinkErr != nil {
+		return fmt.Errorf("decision-sink: %w", decisionSinkErr)
+	}
 
 	var diagnoseFn httpapi.DiagnoseFn
 	if *rulesPath != "" {
@@ -171,7 +199,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if perr != nil {
 			return perr
 		}
-		handler = wireRouterHandler(router.New(routes, policy), tracer, holders, guardWiring, metricsWire, log, *env)
+		handler = wireRouterHandler(router.New(routes, policy), tracer, holders, guardWiring, metricsWire, log, *env, decisionSinkInstance)
 		ruleCount = total
 		bootSource = fmt.Sprintf("%d routes (policy=%s)", len(routes), *policyName)
 		bootAdapter = "router"
@@ -188,7 +216,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			bootAdapter = *adapter
 		}
 		body := newBodyLoader(bootAdapter, *modelVersion, stderr)
-		h, initialResult, err := wireTracedHandler(loader, body, tracer, guardWiring, metricsWire, log, diagnoseFn, *shadowAdmin, *shadowSampleRate, *shadowTimeout, *env)
+		h, initialResult, err := wireTracedHandler(loader, body, tracer, guardWiring, metricsWire, log, diagnoseFn, *shadowAdmin, *shadowSampleRate, *shadowTimeout, *env, decisionSinkInstance)
 		if err != nil {
 			return err
 		}
@@ -265,7 +293,65 @@ func isReady() (string, bool) {
 // http.Handler is the production wiring -- same shape used by
 // tests so they exercise the real seam.
 func wireHandler(loader httpapi.Loader) (http.Handler, httpapi.ReloadResult, error) {
-	return wireTracedHandler(loader, nil, nil, guardrailsWire{}, metricsWiring{}, nil, nil, false, 1.0, 0, "")
+	return wireTracedHandler(loader, nil, nil, guardrailsWire{}, metricsWiring{}, nil, nil, false, 1.0, 0, "", nil)
+}
+
+// decisionSinkFlags is the adapter-neutral bundle of --decision-sink-*
+// values plumbed in from the cmd flag set. buildDecisionSink picks the
+// right adapter and translates these strings into the adapter's typed
+// Config inside the matching switch arm. A second adapter (Pub/Sub /
+// Kafka / NATS) extends the switch without changing this struct.
+type decisionSinkFlags struct {
+	endpoint   string
+	region     string
+	bucket     string
+	accessKey  string
+	secretKey  string
+	useSSL     bool
+	autoCreate bool
+	keyPrefix  string
+	env        string
+	instance   string
+	logger     decisionsink.Logger
+}
+
+// buildDecisionSink translates the --decision-sink* flag bundle into a
+// concrete decisionsink.Sink. When the flag is empty (default) the
+// returned sink is nil — WithAccessLog treats nil as NoopSink and pays
+// zero per-request cost (ADR-0036 hot-path discipline).
+func buildDecisionSink(ctx context.Context, mode string, f decisionSinkFlags) (decisionsink.Sink, error) {
+	switch mode {
+	case "":
+		return nil, nil
+	case "s3":
+		s, err := s3sink.New(ctx, s3sink.Config{
+			Endpoint:   f.endpoint,
+			Region:     f.region,
+			Bucket:     f.bucket,
+			AccessKey:  f.accessKey,
+			SecretKey:  f.secretKey,
+			UseSSL:     f.useSSL,
+			AutoCreate: f.autoCreate,
+			KeyPrefix:  f.keyPrefix,
+			Env:        f.env,
+			Instance:   f.instance,
+			Logger:     f.logger,
+		}, nil)
+		if err != nil {
+			return nil, err
+		}
+		s.Start(ctx)
+		return s, nil
+	default:
+		return nil, fmt.Errorf("--decision-sink %q unknown; want \"\" or \"s3\"", mode)
+	}
+}
+
+func processInstance() string {
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return h
+	}
+	return "unknown"
 }
 
 // metricsWiring bundles the optional Prometheus metrics decorator
@@ -359,7 +445,7 @@ func (r *routeFlagList) Set(v string) error {
 // holder. When holders is nil (legacy callers that did not build
 // per-route reload infrastructure), /admin/reload is not mounted
 // and POSTs return 404. See ADR-0011's follow-up commit.
-func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHolder, gw guardrailsWire, mw metricsWiring, log *jsonlog.Logger, env string) http.Handler {
+func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHolder, gw guardrailsWire, mw metricsWiring, log *jsonlog.Logger, env string, sink decisionsink.Sink) http.Handler {
 	var decideDecider markup.Decider = r
 	if tracer != nil {
 		decideDecider = mkotel.Wrap(decideDecider, tracer, mkotel.WithSpanName("markup.engine.evaluate"))
@@ -395,7 +481,7 @@ func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHol
 	mux.Handle("/healthz", httpapi.Healthz())
 	mux.Handle("/readyz", httpapi.Readyz(isReady))
 	markReady()
-	return httpapi.WithCorrelationID(httpapi.WithTraceContext(httpapi.WithAccessLog(log, env, nil, mux)))
+	return httpapi.WithCorrelationID(httpapi.WithTraceContext(httpapi.WithAccessLog(log, env, sink, mux)))
 }
 
 // routeHolder bundles a route's ModelVersion with its swap.Decider
@@ -529,7 +615,7 @@ func buildRoutes(specs routeFlagList, stderr io.Writer) ([]router.Route, []route
 // holder's inner still flows through the traced layer and continues
 // emitting spans. The /admin/reload route keeps calling holder.Swap
 // directly -- swaps are administrative, not user traffic.
-func wireTracedHandler(loader httpapi.Loader, body httpapi.ReloadBodyLoader, tracer trace.Tracer, gw guardrailsWire, mw metricsWiring, log *jsonlog.Logger, diagnoseFn httpapi.DiagnoseFn, shadowAdmin bool, shadowSampleRate float64, shadowTimeout time.Duration, env string) (http.Handler, httpapi.ReloadResult, error) {
+func wireTracedHandler(loader httpapi.Loader, body httpapi.ReloadBodyLoader, tracer trace.Tracer, gw guardrailsWire, mw metricsWiring, log *jsonlog.Logger, diagnoseFn httpapi.DiagnoseFn, shadowAdmin bool, shadowSampleRate float64, shadowTimeout time.Duration, env string, sink decisionsink.Sink) (http.Handler, httpapi.ReloadResult, error) {
 	initial, result, err := loader()
 	if err != nil {
 		return nil, httpapi.ReloadResult{}, err
@@ -591,7 +677,7 @@ func wireTracedHandler(loader httpapi.Loader, body httpapi.ReloadBodyLoader, tra
 	mux.Handle("/healthz", httpapi.Healthz())
 	mux.Handle("/readyz", httpapi.Readyz(isReady))
 	markReady()
-	return httpapi.WithCorrelationID(httpapi.WithTraceContext(httpapi.WithAccessLog(log, env, nil, mux))), result, nil
+	return httpapi.WithCorrelationID(httpapi.WithTraceContext(httpapi.WithAccessLog(log, env, sink, mux))), result, nil
 }
 
 // snapshotLoader is the boot-time-capturing loader for the --snapshot

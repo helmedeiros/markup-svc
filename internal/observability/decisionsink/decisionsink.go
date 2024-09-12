@@ -53,3 +53,19 @@ type Sink interface {
 type NoopSink struct{}
 
 func (NoopSink) Publish(Event) {}
+
+// Logger is the minimal logging surface every adapter expects.
+// *jsonlog.Logger satisfies it. Adapters that hold no logger fall
+// back silently.
+type Logger interface {
+	Info(msg string, attrs map[string]any)
+}
+
+// Metrics is the optional counter surface every adapter writes to so
+// operators can monitor drops vs flushes from Prometheus. Adapters
+// passed nil simply skip the counter increments; the structured-log
+// emission still fires.
+type Metrics interface {
+	IncDropped(reason string, n int)
+	IncFlushed(events int, bytes int)
+}
