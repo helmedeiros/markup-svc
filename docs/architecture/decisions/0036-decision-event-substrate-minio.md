@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — introduce a `DecisionSink` port at the access-log emission seam and ship an `s3sink` adapter that writes `markup.decision.v1` events as gzipped JSONL files into an S3-compatible bucket. The development substrate is MinIO running as a container in `decision-gateway/docker-compose.yaml`; the production substrate is the operator's choice of real S3 (AWS) / GCS (via the S3 gateway) / Azure Blob (via the S3 gateway). Operator confirmation needed on the port shape, the batching policy defaults, and the object-key layout before this ADR flips to Accepted.
+Accepted — introduce a `decisionsink` port at the access-log emission seam and ship an `s3sink` adapter that writes `markup.decision.v1` events as gzipped JSONL files into an S3-compatible bucket. The development substrate is MinIO running as a container in `decision-gateway/docker-compose.yaml`; the production substrate is the operator's choice of real S3 (AWS) / GCS (via the S3 gateway) / Azure Blob (via the S3 gateway). The port + middleware seam land in this commit; the `s3sink` adapter, cmd flags, and MinIO compose service land in the follow-on commit.
 
 ## Context
 
@@ -147,8 +147,9 @@ A small `cmd/decision-replay` (or similar in a separate repo) that lists the buc
 
 - New dependency: `github.com/minio/minio-go/v7`. Bounded — the client is small and Go-1.18 compatible — but it is the first external network-IO dependency markup-svc takes on.
 - A new failure mode: the sink can drop events when the buffer is full or when flush retries are exhausted. Operators read `markup_decision_sink_dropped_total` to monitor; runbook lands in pricing-observability alongside the existing markup runbooks.
-- Two consumers of the same `markup.decision.v1` payload now exist (the log path AND the sink), doubling the per-event work at the emission site. The structured-log emission already serialises the event once; the sink takes a second pass. A future optimisation can share a single serialised buffer between both paths if measurement shows the duplication matters.
-- Per-Decide cost of the sink-enqueue path is unmeasured at the time of this ADR; a scientific-harness bar pre-registration is parked for a follow-on commit per ADR-0012 protocol (same parking shape as ADR-0035's deferred bar).
+- Two consumers of the same `markup.decision.v1` payload now exist when a sink is wired: the structured-log emission AND the typed sink. The middleware computes the `ts` string once and hands it to both builders; it reuses the same `inputFields` map for `request_context` so the second build does not re-allocate the nested map. The remaining per-Decide cost when a sink is wired is one `decisionsink.Event` struct (~232 B) + one interface dispatch; this allocation is the cost of the typed contract.
+- Default deployment cost is zero. `WithAccessLog` captures a `sinkEnabled` boolean at construction by type-asserting against `NoopSink`. When the cmd wiring passes nil or `NoopSink{}`, the per-request hot path skips the Event build, skips the interface call, and pays no allocation. Operators who do not opt into a substrate see no change.
+- Per-Decide cost of the sink-enqueue path WHEN A SUBSTRATE IS WIRED is unmeasured at the time of this ADR; a scientific-harness bar pre-registration is parked at `scientific/v0.1.23/` for a follow-on commit per ADR-0012 protocol. The default-deployment 0-allocation claim above will be the matching bar's pre-registered floor.
 
 ### Not closed (deferred to follow-on ADRs)
 

@@ -395,7 +395,7 @@ func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHol
 	mux.Handle("/healthz", httpapi.Healthz())
 	mux.Handle("/readyz", httpapi.Readyz(isReady))
 	markReady()
-	return httpapi.WithCorrelationID(httpapi.WithTraceContext(httpapi.WithAccessLog(log, env, mux)))
+	return httpapi.WithCorrelationID(httpapi.WithTraceContext(httpapi.WithAccessLog(log, env, nil, mux)))
 }
 
 // routeHolder bundles a route's ModelVersion with its swap.Decider
@@ -591,7 +591,7 @@ func wireTracedHandler(loader httpapi.Loader, body httpapi.ReloadBodyLoader, tra
 	mux.Handle("/healthz", httpapi.Healthz())
 	mux.Handle("/readyz", httpapi.Readyz(isReady))
 	markReady()
-	return httpapi.WithCorrelationID(httpapi.WithTraceContext(httpapi.WithAccessLog(log, env, mux))), result, nil
+	return httpapi.WithCorrelationID(httpapi.WithTraceContext(httpapi.WithAccessLog(log, env, nil, mux))), result, nil
 }
 
 // snapshotLoader is the boot-time-capturing loader for the --snapshot

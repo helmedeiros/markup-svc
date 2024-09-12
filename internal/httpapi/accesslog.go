@@ -10,6 +10,7 @@ import (
 
 	"github.com/helmedeiros/markup-svc/internal/jsonlog"
 	"github.com/helmedeiros/markup-svc/internal/markup"
+	"github.com/helmedeiros/markup-svc/internal/observability/decisionsink"
 )
 
 // WithAccessLog returns middleware that emits one JSON event per
@@ -20,11 +21,18 @@ import (
 //
 // When the inner handler populated decisionLogEntry, the middleware
 // also emits a parallel "markup.decision.v1" event carrying the
-// ADR-0035 contract. The two events share the same logger and
-// correlation identity; downstream consumers filter by msg.
-func WithAccessLog(l *jsonlog.Logger, env string, next http.Handler) http.Handler {
+// ADR-0035 contract AND, if sink is non-nil, calls sink.Publish with
+// the same payload as a typed decisionsink.Event (ADR-0036). The nil
+// check is at construction so the NoopSink-default deployment pays
+// no per-request cost: no Event build, no interface dispatch, no
+// heap escape.
+func WithAccessLog(l *jsonlog.Logger, env string, sink decisionsink.Sink, next http.Handler) http.Handler {
 	if l == nil {
 		return next
+	}
+	sinkEnabled := sink != nil
+	if _, noop := sink.(decisionsink.NoopSink); noop {
+		sinkEnabled = false
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -62,6 +70,9 @@ func WithAccessLog(l *jsonlog.Logger, env string, next http.Handler) http.Handle
 			if d.noMatch {
 				attrs["no_match"] = true
 			} else if d.outcome == "" || d.outcome == "ok" {
+				// outcome "" covers tests that populate decisionLogEntry
+				// directly without going through ADR-0035 outcome-mapping;
+				// treat as the legacy ok path for access-log enrichment.
 				attrs["rule"] = d.decision.Rule
 				attrs["markup_factor"] = d.decision.MarkupFactor
 				attrs["model_version"] = d.decision.ModelVersion
@@ -72,13 +83,49 @@ func WithAccessLog(l *jsonlog.Logger, env string, next http.Handler) http.Handle
 			}
 		}
 		l.Info("markup-server.access", attrs)
-		// markup.decision.v1 (ADR-0035) emits only when the Decide
-		// handler populated decisionID; a test that constructs a
-		// decisionLogEntry directly does not trigger the new event.
 		if hasDecision && d.decisionID != "" {
-			l.Info("markup.decision.v1", decisionEventAttrs(d, env, durationMS, start, cid, traceID, spanID, ctxFields))
+			ts := start.UTC().Format(time.RFC3339Nano)
+			l.Info("markup.decision.v1", decisionEventAttrs(d, env, durationMS, ts, cid, traceID, spanID, ctxFields))
+			if sinkEnabled {
+				sink.Publish(buildSinkEvent(d, env, durationMS, ts, cid, traceID, spanID, ctxFields))
+			}
 		}
 	})
+}
+
+// buildSinkEvent constructs the typed ADR-0036 decisionsink.Event from
+// the same source values that decisionEventAttrs uses for the log
+// emission. The non-ok branch is explicit so a future Event field
+// gaining a non-zero default does not silently leak stale values onto
+// the sink.
+func buildSinkEvent(d decisionLogEntry, env string, durationMS float64, ts string, cid, traceID, spanID string, context map[string]any) decisionsink.Event {
+	e := decisionsink.Event{
+		SchemaVersion:  decisionsink.SchemaV1,
+		DecisionID:     d.decisionID,
+		Ts:             ts,
+		Env:            env,
+		DecideOutcome:  d.outcome,
+		Error:          d.errorMsg,
+		DurationMS:     durationMS,
+		CorrelationID:  cid,
+		TraceID:        traceID,
+		SpanID:         spanID,
+		RequestContext: context,
+	}
+	if d.outcome == "ok" {
+		e.ModelVersion = d.decision.ModelVersion
+		e.Experiment = d.decision.Experiment
+		e.EngineAdapter = d.decision.EngineAdapter
+		e.Rule = d.decision.Rule
+		e.MarkupFactor = d.decision.MarkupFactor
+	} else {
+		e.ModelVersion = ""
+		e.Experiment = ""
+		e.EngineAdapter = ""
+		e.Rule = ""
+		e.MarkupFactor = 0.0
+	}
+	return e
 }
 
 // decisionEventAttrs builds the ADR-0035 markup.decision.v1 attribute
@@ -88,11 +135,11 @@ func WithAccessLog(l *jsonlog.Logger, env string, next http.Handler) http.Handle
 // schema is emitted explicitly — empty strings and zero floats are
 // stable columns for downstream batch consumers (Spark / Snowflake),
 // not sparse keys.
-func decisionEventAttrs(d decisionLogEntry, env string, durationMS float64, start time.Time, cid, traceID, spanID string, context map[string]any) map[string]any {
+func decisionEventAttrs(d decisionLogEntry, env string, durationMS float64, ts string, cid, traceID, spanID string, context map[string]any) map[string]any {
 	attrs := map[string]any{
-		"schema_version":  "1.0.0",
+		"schema_version":  decisionsink.SchemaV1,
 		"decision_id":     d.decisionID,
-		"ts":              start.UTC().Format(time.RFC3339Nano),
+		"ts":              ts,
 		"env":             env,
 		"decide_outcome":  d.outcome,
 		"duration_ms":     durationMS,

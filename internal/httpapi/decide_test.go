@@ -221,7 +221,7 @@ func TestDecide_EmptyDecisionIDSuppressesEvent(t *testing.T) {
 	stub := &stubDecider{decision: markup.Decision{MarkupFactor: 1.0, Rule: "x", ModelVersion: "v1", EngineAdapter: "*x.Engine"}}
 	var buf bytes.Buffer
 	l := jsonlog.New(&buf)
-	h := httpapi.WithAccessLog(l, "test", httpapi.Decide(stub, httpapi.WithDecisionIDSource(func() string { return "" })))
+	h := httpapi.WithAccessLog(l, "test", nil, httpapi.Decide(stub, httpapi.WithDecisionIDSource(func() string { return "" })))
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/decide", strings.NewReader(`{"country":"DE"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -254,7 +254,7 @@ func captureDecisionEventAndStatus(t *testing.T, decide http.Handler, body strin
 	t.Helper()
 	var buf bytes.Buffer
 	l := jsonlog.New(&buf)
-	h := httpapi.WithAccessLog(l, "test", decide)
+	h := httpapi.WithAccessLog(l, "test", nil, decide)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/decide", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")

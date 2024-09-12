@@ -5,16 +5,37 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/helmedeiros/markup-svc/internal/jsonlog"
 	"github.com/helmedeiros/markup-svc/internal/markup"
+	"github.com/helmedeiros/markup-svc/internal/observability/decisionsink"
 )
+
+type captureSink struct {
+	mu     sync.Mutex
+	events []decisionsink.Event
+}
+
+func (c *captureSink) Publish(e decisionsink.Event) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.events = append(c.events, e)
+}
+
+func (c *captureSink) all() []decisionsink.Event {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]decisionsink.Event, len(c.events))
+	copy(out, c.events)
+	return out
+}
 
 func TestWithAccessLog_EmitsExpectedAttrs(t *testing.T) {
 	var buf bytes.Buffer
 	l := jsonlog.New(&buf)
-	h := WithAccessLog(l, "", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	h := WithAccessLog(l, "", nil, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	}))
 
@@ -62,7 +83,7 @@ func TestWithAccessLog_EnrichesWithRuleAndInputAndOutput(t *testing.T) {
 		*r = *r.WithContext(withDecisionContext(r.Context(), decisionLogEntry{request: req, decision: dec}))
 		w.WriteHeader(http.StatusOK)
 	})
-	h := WithAccessLog(l, "", inner)
+	h := WithAccessLog(l, "", nil, inner)
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/decide", nil))
 
 	var got map[string]any
@@ -96,7 +117,7 @@ func TestWithAccessLog_NoMatchSetsNoMatchTrue(t *testing.T) {
 		*r = *r.WithContext(withDecisionContext(r.Context(), decisionLogEntry{request: req, noMatch: true}))
 		w.WriteHeader(http.StatusNotFound)
 	})
-	WithAccessLog(l, "", inner).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/decide", nil))
+	WithAccessLog(l, "", nil, inner).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/decide", nil))
 
 	var got map[string]any
 	_ = json.Unmarshal(buf.Bytes(), &got)
@@ -115,7 +136,7 @@ func TestWithAccessLog_NoMatchSetsNoMatchTrue(t *testing.T) {
 func TestWithAccessLog_StampsEnvWhenSet(t *testing.T) {
 	var buf bytes.Buffer
 	l := jsonlog.New(&buf)
-	h := WithAccessLog(l, "production", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	h := WithAccessLog(l, "production", nil, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/decide", nil))
@@ -132,7 +153,7 @@ func TestWithAccessLog_StampsEnvWhenSet(t *testing.T) {
 func TestWithAccessLog_OmitsEnvAttrWhenEmpty(t *testing.T) {
 	var buf bytes.Buffer
 	l := jsonlog.New(&buf)
-	h := WithAccessLog(l, "", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	h := WithAccessLog(l, "", nil, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/decide", nil))
@@ -160,7 +181,7 @@ func TestWithAccessLog_EmitsMarkupDecisionV1OnOk(t *testing.T) {
 		}))
 		w.WriteHeader(http.StatusOK)
 	})
-	WithAccessLog(l, "production", inner).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/decide", nil))
+	WithAccessLog(l, "production", nil, inner).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/decide", nil))
 
 	events := decodeJSONLines(t, buf.Bytes())
 	if len(events) != 2 {
@@ -236,7 +257,7 @@ func TestWithAccessLog_EmitsMarkupDecisionV1OnEachOutcome(t *testing.T) {
 				}))
 				w.WriteHeader(http.StatusOK)
 			})
-			WithAccessLog(l, "production", inner).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/decide", nil))
+			WithAccessLog(l, "production", nil, inner).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/decide", nil))
 			events := decodeJSONLines(t, buf.Bytes())
 			if len(events) != 2 {
 				t.Fatalf("event count = %d, want 2", len(events))
@@ -269,7 +290,7 @@ func TestWithAccessLog_OmitsMarkupDecisionV1WhenNoDecisionID(t *testing.T) {
 		*r = *r.WithContext(withDecisionContext(r.Context(), decisionLogEntry{request: req, noMatch: true}))
 		w.WriteHeader(http.StatusNotFound)
 	})
-	WithAccessLog(l, "production", inner).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/decide", nil))
+	WithAccessLog(l, "production", nil, inner).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/decide", nil))
 	events := decodeJSONLines(t, buf.Bytes())
 	if len(events) != 1 {
 		t.Fatalf("event count = %d, want 1 (no decisionID = no markup.decision.v1)", len(events))
@@ -293,9 +314,124 @@ func decodeJSONLines(t *testing.T, raw []byte) []map[string]any {
 	return out
 }
 
+// TestWithAccessLog_PublishesTypedEventOnSink pins the ADR-0036 port
+// contract: when decisionID is populated, the configured Sink receives
+// a typed Event with field-for-field parity to the markup.decision.v1
+// log emission.
+func TestWithAccessLog_PublishesTypedEventOnSink(t *testing.T) {
+	var buf bytes.Buffer
+	l := jsonlog.New(&buf)
+	sink := &captureSink{}
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req := markup.Request{ProductID: "p-1", Country: "DE", Amount: 49.99}
+		dec := markup.Decision{Rule: "enterprise", MarkupFactor: 1.15, ModelVersion: "v1", Experiment: "control", EngineAdapter: "*indexed.Engine"}
+		*r = *r.WithContext(withDecisionContext(r.Context(), decisionLogEntry{
+			request: req, decision: dec, outcome: "ok", decisionID: "det-sink-1",
+		}))
+		w.WriteHeader(http.StatusOK)
+	})
+	WithAccessLog(l, "production", sink, inner).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/decide", nil))
+
+	events := sink.all()
+	if len(events) != 1 {
+		t.Fatalf("sink published %d events, want 1", len(events))
+	}
+	got := events[0]
+	if got.SchemaVersion != "1.0.0" || got.DecisionID != "det-sink-1" || got.Env != "production" {
+		t.Errorf("identity fields wrong: %+v", got)
+	}
+	if got.DecideOutcome != "ok" || got.Rule != "enterprise" || got.MarkupFactor != 1.15 {
+		t.Errorf("decision fields wrong: %+v", got)
+	}
+	if got.ModelVersion != "v1" || got.Experiment != "control" || got.EngineAdapter != "*indexed.Engine" {
+		t.Errorf("model fields wrong: %+v", got)
+	}
+	if got.RequestContext == nil || got.RequestContext["product_id"] != "p-1" {
+		t.Errorf("request_context lost: %+v", got.RequestContext)
+	}
+	if got.Ts == "" {
+		t.Errorf("ts not populated: %q", got.Ts)
+	}
+}
+
+// TestWithAccessLog_SinkClearsModelFieldsOnNonOkOutcome pins the
+// explicit-zero contract on buildSinkEvent's non-ok branch so a future
+// Event field default change does not leak stale model identity onto
+// the sink. Mirrors the access-log non-ok handling.
+func TestWithAccessLog_SinkClearsModelFieldsOnNonOkOutcome(t *testing.T) {
+	cases := []struct{ name, outcome, errorMsg string }{
+		{"no_match", "no_match", ""},
+		{"canceled", "canceled", "context canceled"},
+		{"deadline", "deadline_exceeded", "context deadline exceeded"},
+		{"error", "error", "boom"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			l := jsonlog.New(&buf)
+			sink := &captureSink{}
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				*r = *r.WithContext(withDecisionContext(r.Context(), decisionLogEntry{
+					request: markup.Request{Country: "ZZ"},
+					// A non-ok decisionLogEntry MUST NOT leak prior model identity onto the sink event.
+					decision:   markup.Decision{ModelVersion: "leaked", Rule: "should-not-appear", MarkupFactor: 99.99, EngineAdapter: "*x", Experiment: "leaked-exp"},
+					outcome:    tc.outcome,
+					errorMsg:   tc.errorMsg,
+					decisionID: "det-" + tc.name,
+				}))
+				w.WriteHeader(http.StatusOK)
+			})
+			WithAccessLog(l, "production", sink, inner).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/decide", nil))
+			got := sink.all()
+			if len(got) != 1 {
+				t.Fatalf("sink published %d events, want 1", len(got))
+			}
+			e := got[0]
+			if e.DecideOutcome != tc.outcome || e.Error != tc.errorMsg {
+				t.Errorf("outcome/error wrong: outcome=%q error=%q", e.DecideOutcome, e.Error)
+			}
+			if e.ModelVersion != "" || e.Rule != "" || e.EngineAdapter != "" || e.Experiment != "" || e.MarkupFactor != 0 {
+				t.Errorf("non-ok event leaked decision attrs: model=%q rule=%q adapter=%q exp=%q factor=%v",
+					e.ModelVersion, e.Rule, e.EngineAdapter, e.Experiment, e.MarkupFactor)
+			}
+		})
+	}
+}
+
+// TestWithAccessLog_NoSinkPublishWhenDecisionIDEmpty matches the
+// log-emission gate: legacy callers populating decisionLogEntry without
+// decisionID see neither the log event nor a sink Publish.
+func TestWithAccessLog_NoSinkPublishWhenDecisionIDEmpty(t *testing.T) {
+	var buf bytes.Buffer
+	l := jsonlog.New(&buf)
+	sink := &captureSink{}
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*r = *r.WithContext(withDecisionContext(r.Context(), decisionLogEntry{request: markup.Request{Country: "ZZ"}, noMatch: true}))
+		w.WriteHeader(http.StatusNotFound)
+	})
+	WithAccessLog(l, "production", sink, inner).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/decide", nil))
+	if got := sink.all(); len(got) != 0 {
+		t.Fatalf("sink should not Publish without decisionID; got %d", len(got))
+	}
+}
+
+// TestWithAccessLog_NilSinkDefaultsToNoop confirms a nil sink does not
+// panic and behaves like NoopSink.
+func TestWithAccessLog_NilSinkDefaultsToNoop(t *testing.T) {
+	var buf bytes.Buffer
+	l := jsonlog.New(&buf)
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*r = *r.WithContext(withDecisionContext(r.Context(), decisionLogEntry{
+			request: markup.Request{}, outcome: "ok", decisionID: "det-x",
+		}))
+		w.WriteHeader(http.StatusOK)
+	})
+	WithAccessLog(l, "", nil, inner).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/decide", nil))
+}
+
 func TestWithAccessLog_NilLoggerIsPassThrough(t *testing.T) {
 	called := false
-	h := WithAccessLog(nil, "", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	h := WithAccessLog(nil, "", nil, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	}))
