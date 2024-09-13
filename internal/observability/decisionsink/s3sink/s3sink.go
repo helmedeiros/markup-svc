@@ -1,17 +1,5 @@
 // Package s3sink is the ADR-0036 decisionsink adapter that writes
-// markup.decision.v1 events to an S3-compatible bucket. Development
-// substrate is MinIO running in compose; production substrate is real
-// S3 (AWS) — same client, same wire protocol, env-var endpoint flip.
-//
-// Operational posture (from ADR-0036):
-//
-//   - Publish is non-blocking; the queue is bounded.
-//   - On queue full or on flush-retry exhaustion the batch is dropped
-//     with markup_decision_sink_dropped_total ticking; /decide never
-//     blocks on S3 trouble.
-//   - Batches flush on the first of (time window, byte budget).
-//   - Object keys use Hive partition style so Spark / Snowflake / Athena
-//     / BigQuery external tables read the bucket natively.
+// markup.decision.v1 events to an S3-compatible bucket.
 package s3sink
 
 import (
@@ -29,27 +17,23 @@ import (
 	"github.com/helmedeiros/markup-svc/internal/observability/decisionsink"
 )
 
-// Config carries the operator-facing knobs. Zero values fall through
-// to documented defaults; New applies them.
 type Config struct {
-	Endpoint   string // "" for the SDK default (real AWS); set for MinIO / GCS-S3 / Azure-S3
-	Region     string // default "us-east-1"
-	Bucket     string // required
-	AccessKey  string // typically from AWS_ACCESS_KEY_ID
-	SecretKey  string // typically from AWS_SECRET_ACCESS_KEY
+	Endpoint   string
+	Region     string
+	Bucket     string
+	AccessKey  string
+	SecretKey  string
 	UseSSL     bool
-	AutoCreate bool              // true → CreateBucket if missing; false → fail loud
-	KeyPrefix  string            // default "markup-decision-v1/"
-	Env        string            // partition value for env=
-	Instance   string            // partition value for instance=
-	QueueSize  int               // default 10_000
-	BatchSize  int               // default 10 * 1024 * 1024 (pre-compression)
-	BatchEvery time.Duration     // default 5 * time.Minute
-	Logger     decisionsink.Logger // optional; informational flush/drop events
+	AutoCreate bool
+	KeyPrefix  string
+	Env        string
+	Instance   string
+	QueueSize  int
+	BatchSize  int
+	BatchEvery time.Duration
+	Logger     decisionsink.Logger
 }
 
-// Sink is the ADR-0036 adapter. Construct with New, then Start to
-// launch the background flush loop.
 type Sink struct {
 	cfg     Config
 	client  *minio.Client
@@ -57,30 +41,21 @@ type Sink struct {
 	queue   chan decisionsink.Event
 	seq     uint64
 
-	dropped         uint64
-	flushed         uint64
-	lastDropLogNS   int64 // atomic; rate-limits Publish-side drop logs
-	done            chan struct{}
+	dropped       uint64
+	flushed       uint64
+	lastDropLogNS int64
+	done          chan struct{}
 }
 
-// bufferFullLogQuietWindow is the minimum interval between two
-// markup.decision.sink.buffer_full log emissions. Bursty queue-full
-// failures during a sustained S3 outage would otherwise flood the
-// log pipeline; one log per quiet-window is enough to alert on the
-// onset and the metrics counter carries the volume.
 const bufferFullLogQuietWindow = 5 * time.Second
 
-// New constructs the Sink and verifies the bucket exists (or creates
-// it when AutoCreate is true).
 func New(ctx context.Context, cfg Config, metrics decisionsink.Metrics) (*Sink, error) {
 	cfg = applyDefaults(cfg)
 	if cfg.Bucket == "" {
 		return nil, fmt.Errorf("s3sink: --decision-sink-bucket is required")
 	}
-	// minio-go's package-global MaxRetry defaults to 10 with binomial
-	// backoff which compounds against our own bounded-backoff loop and
-	// stretches one failed PUT into ~30s. Setting it to 1 makes the
-	// SDK do exactly one attempt; our upload() owns the retry policy.
+	// minio-go's package-global MaxRetry compounds with our own bounded
+	// backoff; set to 1 so upload() owns the retry policy.
 	minio.MaxRetry = 1
 	client, err := minio.New(cfg.Endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
@@ -111,17 +86,10 @@ func New(ctx context.Context, cfg Config, metrics decisionsink.Metrics) (*Sink, 
 	}, nil
 }
 
-// Start launches the background flush goroutine. Cancel ctx to stop.
 func (s *Sink) Start(ctx context.Context) {
 	go s.run(ctx)
 }
 
-// Publish enqueues one event. Non-blocking — a full queue increments
-// the drop counter and emits a rate-limited structured log on the
-// onset of bursts (first event after a 5s quiet window). The log
-// names the queue depth and the lifetime drop count so operators see
-// the early signal without the log pipeline drowning under sustained
-// pressure.
 func (s *Sink) Publish(e decisionsink.Event) {
 	select {
 	case s.queue <- e:
@@ -201,11 +169,9 @@ func (s *Sink) run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			// Graceful shutdown: drain anything still in the queue
-			// into the current batch so a SIGTERM during a deploy
-			// does not strand pending events, then flush with a
-			// fresh context bounded to 10s so the final upload does
-			// not race the canceled parent ctx.
+			// Drain queue + flush with fresh ctx so SIGTERM at deploy
+			// doesn't strand events and the upload doesn't race the
+			// canceled parent.
 			for {
 				select {
 				case e := <-s.queue:
@@ -260,10 +226,6 @@ func (s *Sink) upload(ctx context.Context, payload []byte) error {
 	return lastErr
 }
 
-// objectKey builds the Hive-partition-style key for one batch.
-//
-//	markup-decision-v1/dt=2024-09-12/hour=10/env=production/
-//	  instance=markup-svc-abc12/batch-20240912T103200Z-000042.jsonl.gz
 func (s *Sink) objectKey(now time.Time, seq uint64) string {
 	return fmt.Sprintf("%sdt=%s/hour=%02d/env=%s/instance=%s/batch-%s-%06d.jsonl.gz",
 		s.cfg.KeyPrefix,
@@ -276,7 +238,6 @@ func (s *Sink) objectKey(now time.Time, seq uint64) string {
 	)
 }
 
-// serializeBatch writes each Event as one JSON line, gzip-compressed.
 func serializeBatch(events []decisionsink.Event) ([]byte, error) {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
@@ -293,13 +254,9 @@ func serializeBatch(events []decisionsink.Event) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// estimateSize ballparks the pre-compression bytes one event will
-// contribute to the batch buffer so the BatchSize trigger fires
-// before memory blows up. The estimate is intentionally coarse —
-// exact size requires serialising the event, which is the work we're
-// trying to amortise.
+// estimateSize gates the BatchSize trigger without re-serialising.
 func estimateSize(e decisionsink.Event) int {
-	n := 256 // baseline: fixed fields + JSON quoting
+	n := 256
 	n += len(e.DecisionID) + len(e.Ts) + len(e.Env) + len(e.ModelVersion) +
 		len(e.Experiment) + len(e.EngineAdapter) + len(e.Rule) +
 		len(e.DecideOutcome) + len(e.Error) + len(e.CorrelationID) +

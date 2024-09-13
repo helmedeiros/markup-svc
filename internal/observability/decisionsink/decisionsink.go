@@ -1,24 +1,10 @@
 // Package decisionsink is the port through which the /decide path
-// publishes one markup.decision.v1 event per request to a durable
-// substrate (S3/MinIO via the s3sink adapter; future Pub/Sub / Kafka
-// adapters implement the same Sink interface).
-//
-// Event mirrors the ADR-0035 schema field-for-field with JSON tags so
-// adapters that serialise to JSONL (s3sink) keep the wire shape stable
-// without re-stating the contract in adapter code. The struct is the
-// authoritative shape; access-log emission keeps using the existing
-// map-shaped jsonlog API. Both consume the same Event.
+// publishes markup.decision.v1 events to a durable substrate. See
+// ADR-0035 (schema) and ADR-0036 (substrate adapter).
 package decisionsink
 
-// SchemaV1 is the markup.decision schema_version value carried on
-// every v1 event. Builders import this constant rather than spelling
-// the literal so a grep finds every emission site at once.
 const SchemaV1 = "1.0.0"
 
-// Event is the typed projection of markup.decision.v1 (ADR-0035) that
-// every Sink adapter receives. Adapters MUST treat the JSON tags as
-// the wire contract for downstream consumers; renaming a tag is a
-// schema-breaking change requiring a v2 ADR + dual-emission window.
 type Event struct {
 	SchemaVersion  string         `json:"schema_version"`
 	DecisionID     string         `json:"decision_id"`
@@ -38,33 +24,20 @@ type Event struct {
 	RequestContext map[string]any `json:"request_context"`
 }
 
-// Sink accepts a markup.decision.v1 event for asynchronous delivery to
-// a downstream substrate. Implementations document their durability,
-// batching, and backpressure posture; the port contract is "non-blocking
-// best-effort" — Publish MUST NOT block the /decide path on substrate
-// IO, and MUST NOT return an error that callers would have to handle.
-// Substrate failures surface as adapter-side counters per ADR-0036.
+// Sink accepts an event for asynchronous delivery. Publish MUST NOT
+// block on substrate IO.
 type Sink interface {
 	Publish(event Event)
 }
 
-// NoopSink discards events. The default when no sink is wired.
-// Operators flip to a real adapter via cmd flags.
 type NoopSink struct{}
 
 func (NoopSink) Publish(Event) {}
 
-// Logger is the minimal logging surface every adapter expects.
-// *jsonlog.Logger satisfies it. Adapters that hold no logger fall
-// back silently.
 type Logger interface {
 	Info(msg string, attrs map[string]any)
 }
 
-// Metrics is the optional counter surface every adapter writes to so
-// operators can monitor drops vs flushes from Prometheus. Adapters
-// passed nil simply skip the counter increments; the structured-log
-// emission still fires.
 type Metrics interface {
 	IncDropped(reason string, n int)
 	IncFlushed(events int, bytes int)

@@ -299,11 +299,8 @@ func wireHandler(loader httpapi.Loader) (http.Handler, httpapi.ReloadResult, err
 	return wireTracedHandler(loader, nil, nil, guardrailsWire{}, metricsWiring{}, nil, nil, false, 1.0, 0, "", nil)
 }
 
-// decisionSinkFlags is the adapter-neutral bundle of --decision-sink-*
-// values plumbed in from the cmd flag set. buildDecisionSink picks the
-// right adapter and translates these strings into the adapter's typed
-// Config inside the matching switch arm. A second adapter (Pub/Sub /
-// Kafka / NATS) extends the switch without changing this struct.
+// decisionSinkFlags is adapter-neutral; the s3sink.Config translation
+// lives inside buildDecisionSink's "s3" case.
 type decisionSinkFlags struct {
 	endpoint   string
 	region     string
@@ -319,10 +316,6 @@ type decisionSinkFlags struct {
 	metrics    decisionsink.Metrics
 }
 
-// buildDecisionSink translates the --decision-sink* flag bundle into a
-// concrete decisionsink.Sink. When the flag is empty (default) the
-// returned sink is nil — WithAccessLog treats nil as NoopSink and pays
-// zero per-request cost (ADR-0036 hot-path discipline).
 func buildDecisionSink(ctx context.Context, mode string, f decisionSinkFlags) (decisionsink.Sink, error) {
 	switch mode {
 	case "":

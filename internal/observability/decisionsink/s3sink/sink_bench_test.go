@@ -10,15 +10,8 @@ import (
 	"github.com/helmedeiros/markup-svc/internal/observability/decisionsink"
 )
 
-// BenchmarkSinkPublishNoop measures the per-call cost of NoopSink.Publish.
-// Bar pre-registered in scientific/v0.1.23/REPORT.md: p99 ≤ 50 ns / op,
-// 0 allocs/op. This is the load-bearing claim from ADR-0036's
-// "default deployment cost is zero" prose: when the cmd shell does
-// not wire a substrate, WithAccessLog captures sinkEnabled=false at
-// construction so this Publish never runs. The bench here measures
-// what would happen if a NoopSink were wired and Publish was called
-// — the floor must stay at the documented number so a future
-// refactor cannot silently re-introduce a per-call allocation.
+// Bars pre-registered in scientific/v0.1.23/REPORT.md.
+
 func BenchmarkSinkPublishNoop(b *testing.B) {
 	var s decisionsink.Sink = decisionsink.NoopSink{}
 	e := bigBenchEvent()
@@ -39,16 +32,6 @@ func BenchmarkSinkPublishNoop(b *testing.B) {
 	}
 }
 
-// BenchmarkSinkPublishS3SinkEnqueue measures the per-call cost of
-// s3sink.Publish when the queue has room. Bar pre-registered in
-// scientific/v0.1.23/REPORT.md: p99 ≤ 250 ns / op, 0 allocs/op. The
-// fast path is a non-blocking channel send via `select { case ch <-
-// e: default: drop }`. Drop side ticks the metric counter +
-// rate-limited log; the happy path is just the channel send.
-//
-// The bench wires a Sink with a 10k queue and does NOT start the
-// flush goroutine so the queue accumulates and the channel send
-// stays in its fast path (no buffer-resize, no goroutine wake).
 func BenchmarkSinkPublishS3SinkEnqueue(b *testing.B) {
 	s := &Sink{
 		cfg:   applyDefaults(Config{Bucket: "test", QueueSize: 10000}),
@@ -60,7 +43,6 @@ func BenchmarkSinkPublishS3SinkEnqueue(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if len(s.queue) == cap(s.queue) {
-			// drain to keep enqueue in fast path
 			for len(s.queue) > 0 {
 				<-s.queue
 			}
@@ -78,11 +60,6 @@ func BenchmarkSinkPublishS3SinkEnqueue(b *testing.B) {
 	}
 }
 
-// BenchmarkSinkPublishBufferFullDrop measures the drop path under
-// sustained queue saturation — the second hot path operators see
-// during an S3 outage. Bar pre-registered: p99 ≤ 200 ns / op, 0
-// allocs/op (the metric inc is atomic; the rate-limited log path is
-// short-circuited by the CAS gate after the first iteration).
 func BenchmarkSinkPublishBufferFullDrop(b *testing.B) {
 	mt := &benchMetrics{}
 	s := &Sink{
@@ -90,7 +67,6 @@ func BenchmarkSinkPublishBufferFullDrop(b *testing.B) {
 		metrics: mt,
 		queue:   make(chan decisionsink.Event, 1),
 	}
-	// Saturate the queue once so every Publish drops.
 	s.queue <- decisionsink.Event{}
 	e := bigBenchEvent()
 	durations := make([]time.Duration, 0, b.N)
@@ -122,7 +98,6 @@ func bigBenchEvent() decisionsink.Event {
 		Rule:           "enterprise",
 		MarkupFactor:   1.15,
 		DecideOutcome:  "ok",
-		Error:          "",
 		DurationMS:     0.487,
 		CorrelationID:  "c-deadbeefcafebabe",
 		TraceID:        "t-0123456789abcdef0123456789abcdef",
@@ -150,5 +125,5 @@ func benchPercentile(samples []time.Duration, p float64) time.Duration {
 
 type benchMetrics struct{}
 
-func (benchMetrics) IncDropped(string, int)  {}
-func (benchMetrics) IncFlushed(int, int)     {}
+func (benchMetrics) IncDropped(string, int) {}
+func (benchMetrics) IncFlushed(int, int)    {}

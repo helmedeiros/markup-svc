@@ -79,11 +79,7 @@ func (s *ShadowSink) RecordChallengerDuration(d time.Duration) {
 	s.duration.WithLabelValues(s.env).Observe(d.Seconds())
 }
 
-// DecisionSinkMetrics implements decisionsink.Metrics. Exposes the two
-// counters ADR-0036 names as the canonical operational signals for
-// the markup.decision.v1 substrate path: drops by reason, and flush
-// success counts. The bytes histogram captures payload sizes so
-// operators can correlate spikes against bucket-cost growth.
+// DecisionSinkMetrics implements decisionsink.Metrics (ADR-0036).
 type DecisionSinkMetrics struct {
 	env     string
 	dropped *prometheus.CounterVec
@@ -91,12 +87,10 @@ type DecisionSinkMetrics struct {
 	bytes   *prometheus.CounterVec
 }
 
-// IncDropped implements decisionsink.Metrics.
 func (m *DecisionSinkMetrics) IncDropped(reason string, n int) {
 	m.dropped.WithLabelValues(m.env, reason).Add(float64(n))
 }
 
-// IncFlushed implements decisionsink.Metrics.
 func (m *DecisionSinkMetrics) IncFlushed(events int, byteCount int) {
 	m.flushed.WithLabelValues(m.env).Add(float64(events))
 	m.bytes.WithLabelValues(m.env).Add(float64(byteCount))

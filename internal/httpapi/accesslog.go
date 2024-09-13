@@ -13,19 +13,11 @@ import (
 	"github.com/helmedeiros/markup-svc/internal/observability/decisionsink"
 )
 
-// WithAccessLog returns middleware that emits one JSON event per
-// request as "markup-server.access" with attrs {method, path, status,
-// duration_ms, correlation_id, trace_id, span_id}. See ADR-0021.
-// When env is non-empty, attrs.env carries the process-level
-// environment identifier (ADR-0034).
-//
-// When the inner handler populated decisionLogEntry, the middleware
-// also emits a parallel "markup.decision.v1" event carrying the
-// ADR-0035 contract AND, if sink is non-nil, calls sink.Publish with
-// the same payload as a typed decisionsink.Event (ADR-0036). The nil
-// check is at construction so the NoopSink-default deployment pays
-// no per-request cost: no Event build, no interface dispatch, no
-// heap escape.
+// WithAccessLog emits markup-server.access (ADR-0021) per request.
+// When decisionLogEntry is populated, it also emits markup.decision.v1
+// (ADR-0035) and, if a non-Noop sink is wired, Publishes the typed
+// Event (ADR-0036). sinkEnabled is captured at construction so the
+// default deployment pays no per-request sink cost.
 func WithAccessLog(l *jsonlog.Logger, env string, sink decisionsink.Sink, next http.Handler) http.Handler {
 	if l == nil {
 		return next
@@ -70,9 +62,7 @@ func WithAccessLog(l *jsonlog.Logger, env string, sink decisionsink.Sink, next h
 			if d.noMatch {
 				attrs["no_match"] = true
 			} else if d.outcome == "" || d.outcome == "ok" {
-				// outcome "" covers tests that populate decisionLogEntry
-				// directly without going through ADR-0035 outcome-mapping;
-				// treat as the legacy ok path for access-log enrichment.
+				// outcome "" = legacy test path bypassing ADR-0035 mapping.
 				attrs["rule"] = d.decision.Rule
 				attrs["markup_factor"] = d.decision.MarkupFactor
 				attrs["model_version"] = d.decision.ModelVersion
@@ -93,11 +83,8 @@ func WithAccessLog(l *jsonlog.Logger, env string, sink decisionsink.Sink, next h
 	})
 }
 
-// buildSinkEvent constructs the typed ADR-0036 decisionsink.Event from
-// the same source values that decisionEventAttrs uses for the log
-// emission. The non-ok branch is explicit so a future Event field
-// gaining a non-zero default does not silently leak stale values onto
-// the sink.
+// buildSinkEvent's non-ok branch is explicit so a future Event field
+// gaining a non-zero default cannot leak stale values onto the sink.
 func buildSinkEvent(d decisionLogEntry, env string, durationMS float64, ts string, cid, traceID, spanID string, context map[string]any) decisionsink.Event {
 	e := decisionsink.Event{
 		SchemaVersion:  decisionsink.SchemaV1,
@@ -128,13 +115,8 @@ func buildSinkEvent(d decisionLogEntry, env string, durationMS float64, ts strin
 	return e
 }
 
-// decisionEventAttrs builds the ADR-0035 markup.decision.v1 attribute
-// set. ts is the request start (the closest time we have to "when the
-// decision was made"); duration_ms is the full /decide handler
-// envelope, matching the access-log semantic. Every field in the v1
-// schema is emitted explicitly — empty strings and zero floats are
-// stable columns for downstream batch consumers (Spark / Snowflake),
-// not sparse keys.
+// decisionEventAttrs emits every v1 field explicitly so downstream
+// batch consumers see stable columns rather than sparse keys.
 func decisionEventAttrs(d decisionLogEntry, env string, durationMS float64, ts string, cid, traceID, spanID string, context map[string]any) map[string]any {
 	attrs := map[string]any{
 		"schema_version":  decisionsink.SchemaV1,
