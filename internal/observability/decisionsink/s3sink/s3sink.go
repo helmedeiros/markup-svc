@@ -57,10 +57,18 @@ type Sink struct {
 	queue   chan decisionsink.Event
 	seq     uint64
 
-	dropped uint64
-	flushed uint64
-	done    chan struct{}
+	dropped         uint64
+	flushed         uint64
+	lastDropLogNS   int64 // atomic; rate-limits Publish-side drop logs
+	done            chan struct{}
 }
+
+// bufferFullLogQuietWindow is the minimum interval between two
+// markup.decision.sink.buffer_full log emissions. Bursty queue-full
+// failures during a sustained S3 outage would otherwise flood the
+// log pipeline; one log per quiet-window is enough to alert on the
+// onset and the metrics counter carries the volume.
+const bufferFullLogQuietWindow = 5 * time.Second
 
 // New constructs the Sink and verifies the bucket exists (or creates
 // it when AutoCreate is true).
@@ -109,13 +117,36 @@ func (s *Sink) Start(ctx context.Context) {
 }
 
 // Publish enqueues one event. Non-blocking — a full queue increments
-// the drop counter and returns without blocking.
+// the drop counter and emits a rate-limited structured log on the
+// onset of bursts (first event after a 5s quiet window). The log
+// names the queue depth and the lifetime drop count so operators see
+// the early signal without the log pipeline drowning under sustained
+// pressure.
 func (s *Sink) Publish(e decisionsink.Event) {
 	select {
 	case s.queue <- e:
 	default:
 		s.recordDrop("buffer_full", 1)
+		s.maybeLogBufferFullDrop()
 	}
+}
+
+func (s *Sink) maybeLogBufferFullDrop() {
+	if s.cfg.Logger == nil {
+		return
+	}
+	now := time.Now().UnixNano()
+	prev := atomic.LoadInt64(&s.lastDropLogNS)
+	if now-prev < int64(bufferFullLogQuietWindow) {
+		return
+	}
+	if !atomic.CompareAndSwapInt64(&s.lastDropLogNS, prev, now) {
+		return
+	}
+	s.cfg.Logger.Info("markup.decision.sink.buffer_full", map[string]any{
+		"queue_capacity":    s.cfg.QueueSize,
+		"lifetime_dropped":  atomic.LoadUint64(&s.dropped),
+	})
 }
 
 func (s *Sink) run(ctx context.Context) {

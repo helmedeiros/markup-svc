@@ -23,7 +23,7 @@ func TestE2E_ShadowDecideDrivesChallengerAgreementMetric(t *testing.T) {
 	loader := rulesLoader(rulesPath, "inmemory", "v0-shadow", io.Discard)
 	body := newBodyLoader("inmemory", "v0-shadow", io.Discard)
 
-	sink, shadowSink, promHandler := mkprom.New("test")
+	sink, shadowSink, _, promHandler := mkprom.New("test")
 	mw := metricsWiring{sink: sink, shadow: shadowSink, handler: promHandler}
 
 	handler, _, err := wireTracedHandler(loader, body, nil, guardrailsWire{}, mw, nil, nil, true, 1.0, 0, "", nil)
@@ -77,7 +77,7 @@ func TestE2E_ShadowDecide_DisagreementRecordsFactorDelta(t *testing.T) {
 	loader := rulesLoader(rulesPath, "inmemory", "v0-shadow", io.Discard)
 	body := newBodyLoader("inmemory", "v0-shadow", io.Discard)
 
-	sink, shadowSink, promHandler := mkprom.New("test")
+	sink, shadowSink, _, promHandler := mkprom.New("test")
 	mw := metricsWiring{sink: sink, shadow: shadowSink, handler: promHandler}
 
 	handler, _, err := wireTracedHandler(loader, body, nil, guardrailsWire{}, mw, nil, nil, true, 1.0, 0, "", nil)

@@ -71,6 +71,34 @@ func TestSerializeBatch_RoundTripsAllEvents(t *testing.T) {
 	}
 }
 
+// TestPublish_BufferFullEmitsRateLimitedLog confirms the first drop
+// after a quiet window emits markup.decision.sink.buffer_full once;
+// subsequent rapid drops within the window do NOT flood the log
+// pipeline (the metrics counter carries the per-event volume).
+func TestPublish_BufferFullEmitsRateLimitedLog(t *testing.T) {
+	captured := &captureLogger{}
+	s := &Sink{
+		cfg:   applyDefaults(Config{Bucket: "test", QueueSize: 2, Logger: captured}),
+		queue: make(chan decisionsink.Event, 2),
+	}
+	s.Publish(decisionsink.Event{DecisionID: "1"})
+	s.Publish(decisionsink.Event{DecisionID: "2"})
+	// Burst three quick drops; only the first should log.
+	for i := 0; i < 3; i++ {
+		s.Publish(decisionsink.Event{DecisionID: "burst"})
+	}
+	if got := captured.count("markup.decision.sink.buffer_full"); got != 1 {
+		t.Fatalf("buffer_full log fired %d times in a burst, want 1 (rate-limited)", got)
+	}
+	if got := s.Dropped(); got != 3 {
+		t.Errorf("Dropped() = %d, want 3 (all three burst events counted)", got)
+	}
+	attrs := captured.lastAttrs("markup.decision.sink.buffer_full")
+	if attrs["queue_capacity"] != 2 {
+		t.Errorf("queue_capacity attr = %v, want 2", attrs["queue_capacity"])
+	}
+}
+
 // TestPublish_BufferFullDropsAndCounts pins the non-blocking contract:
 // when the queue is full, Publish must NOT block, and must increment
 // the drop counter with reason=buffer_full.
@@ -305,6 +333,45 @@ func waitFor(t *testing.T, cond func() bool, timeout time.Duration, label string
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", label)
+}
+
+type captureLogger struct {
+	mu     sync.Mutex
+	events []logEvent
+}
+
+type logEvent struct {
+	msg   string
+	attrs map[string]any
+}
+
+func (c *captureLogger) Info(msg string, attrs map[string]any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.events = append(c.events, logEvent{msg: msg, attrs: attrs})
+}
+
+func (c *captureLogger) count(msg string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, e := range c.events {
+		if e.msg == msg {
+			n++
+		}
+	}
+	return n
+}
+
+func (c *captureLogger) lastAttrs(msg string) map[string]any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := len(c.events) - 1; i >= 0; i-- {
+		if c.events[i].msg == msg {
+			return c.events[i].attrs
+		}
+	}
+	return nil
 }
 
 type countMetrics struct {

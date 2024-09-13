@@ -126,9 +126,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 
 	var metricsWire metricsWiring
+	var decisionSinkMetrics decisionsink.Metrics
 	if *metricsEnabled {
-		sink, shadowSink, h := mkprom.New(*env)
+		sink, shadowSink, dsMetrics, h := mkprom.New(*env)
 		metricsWire = metricsWiring{sink: sink, shadow: shadowSink, handler: h}
+		decisionSinkMetrics = dsMetrics
 	}
 
 	log := jsonlog.New(stdout)
@@ -145,6 +147,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		env:        *env,
 		instance:   processInstance(),
 		logger:     log,
+		metrics:    decisionSinkMetrics,
 	})
 	if decisionSinkErr != nil {
 		return fmt.Errorf("decision-sink: %w", decisionSinkErr)
@@ -313,6 +316,7 @@ type decisionSinkFlags struct {
 	env        string
 	instance   string
 	logger     decisionsink.Logger
+	metrics    decisionsink.Metrics
 }
 
 // buildDecisionSink translates the --decision-sink* flag bundle into a
@@ -336,7 +340,7 @@ func buildDecisionSink(ctx context.Context, mode string, f decisionSinkFlags) (d
 			Env:        f.env,
 			Instance:   f.instance,
 			Logger:     f.logger,
-		}, nil)
+		}, f.metrics)
 		if err != nil {
 			return nil, err
 		}

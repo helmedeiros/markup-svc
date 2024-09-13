@@ -79,6 +79,29 @@ func (s *ShadowSink) RecordChallengerDuration(d time.Duration) {
 	s.duration.WithLabelValues(s.env).Observe(d.Seconds())
 }
 
+// DecisionSinkMetrics implements decisionsink.Metrics. Exposes the two
+// counters ADR-0036 names as the canonical operational signals for
+// the markup.decision.v1 substrate path: drops by reason, and flush
+// success counts. The bytes histogram captures payload sizes so
+// operators can correlate spikes against bucket-cost growth.
+type DecisionSinkMetrics struct {
+	env     string
+	dropped *prometheus.CounterVec
+	flushed *prometheus.CounterVec
+	bytes   *prometheus.CounterVec
+}
+
+// IncDropped implements decisionsink.Metrics.
+func (m *DecisionSinkMetrics) IncDropped(reason string, n int) {
+	m.dropped.WithLabelValues(m.env, reason).Add(float64(n))
+}
+
+// IncFlushed implements decisionsink.Metrics.
+func (m *DecisionSinkMetrics) IncFlushed(events int, byteCount int) {
+	m.flushed.WithLabelValues(m.env).Add(float64(events))
+	m.bytes.WithLabelValues(m.env).Add(float64(byteCount))
+}
+
 // shadowFactorDeltaBuckets cover the realistic markup-factor delta
 // range: rules carry factors at ~3 decimal places and live in
 // [0.5, 5.0]; deltas span 1e-3 to ~1 with the long tail at 0.1-0.5.
@@ -121,7 +144,7 @@ var decideBuckets = []float64{
 // the histogram is mostly informative at the lower end. A
 // custom-buckets ADR can land if production tail-latency
 // investigation needs different breakpoints.
-func New(env string) (*Sink, *ShadowSink, http.Handler) {
+func New(env string) (*Sink, *ShadowSink, *DecisionSinkMetrics, http.Handler) {
 	if env == "" {
 		env = "default"
 	}
@@ -192,7 +215,28 @@ func New(env string) (*Sink, *ShadowSink, http.Handler) {
 		},
 		[]string{"env"},
 	)
-	reg.MustRegister(count, dur, shadowAgree, shadowOneSided, shadowTimeouts, shadowErrs, shadowDelta, shadowSampled, shadowDuration)
+	sinkDropped := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "markup_decision_sink_dropped_total",
+			Help: "markup.decision.v1 events dropped by the decision-sink adapter (ADR-0036). reason=buffer_full|serialize_failed|flush_failed. env per ADR-0034.",
+		},
+		[]string{"env", "reason"},
+	)
+	sinkFlushed := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "markup_decision_sink_flushed_total",
+			Help: "markup.decision.v1 events successfully delivered by the decision-sink adapter to the substrate (ADR-0036). env per ADR-0034.",
+		},
+		[]string{"env"},
+	)
+	sinkBytes := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "markup_decision_sink_flushed_bytes_total",
+			Help: "Post-compression bytes successfully delivered by the decision-sink adapter (ADR-0036). env per ADR-0034.",
+		},
+		[]string{"env"},
+	)
+	reg.MustRegister(count, dur, shadowAgree, shadowOneSided, shadowTimeouts, shadowErrs, shadowDelta, shadowSampled, shadowDuration, sinkDropped, sinkFlushed, sinkBytes)
 	handler := promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
 	return &Sink{count: count, dur: dur},
 		&ShadowSink{
@@ -202,6 +246,7 @@ func New(env string) (*Sink, *ShadowSink, http.Handler) {
 			factorDelta: shadowDelta, sampled: shadowSampled,
 			duration: shadowDuration,
 		},
+		&DecisionSinkMetrics{env: env, dropped: sinkDropped, flushed: sinkFlushed, bytes: sinkBytes},
 		handler
 }
 

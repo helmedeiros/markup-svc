@@ -19,7 +19,7 @@ import (
 // /metrics scrape body contains exactly the matching counter +
 // histogram lines.
 func TestSink_RecordDecision_ExposesCountersAndHistograms(t *testing.T) {
-	sink, _, handler := prom.New("test-env")
+	sink, _, _, handler := prom.New("test-env")
 
 	sink.RecordDecision(metrics.DecisionMetric{
 		Adapter:      "*inmemory.Engine",
@@ -60,7 +60,7 @@ func TestSink_RecordDecision_ExposesCountersAndHistograms(t *testing.T) {
 // counts for a sequence of real Decide invocations through an
 // in-memory stub Decider.
 func TestSink_AsDecorator(t *testing.T) {
-	sink, _, handler := prom.New("test-env")
+	sink, _, _, handler := prom.New("test-env")
 
 	inner := &stubDecider{
 		decision: markup.Decision{EngineAdapter: "*stub", ModelVersion: "vTest", Rule: "default", MarkupFactor: 1.00},
@@ -90,7 +90,7 @@ func TestSink_AsDecorator(t *testing.T) {
 // scrape body carries env="production" on each series. Pins the
 // ADR-0034 contract.
 func TestShadowSink_AllSeriesCarryEnvLabel(t *testing.T) {
-	_, shadow, handler := prom.New("production")
+	_, shadow, _, handler := prom.New("production")
 
 	shadow.RecordAgreement(true)
 	shadow.RecordAgreement(false)
@@ -126,12 +126,38 @@ func TestShadowSink_AllSeriesCarryEnvLabel(t *testing.T) {
 // fallback so a deployment that boots without setting --env produces a
 // usable env label.
 func TestPromNew_EmptyEnvDefaultsToDefault(t *testing.T) {
-	_, shadow, handler := prom.New("")
+	_, shadow, _, handler := prom.New("")
 	shadow.RecordAgreement(true)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if !strings.Contains(rec.Body.String(), `env="default"`) {
 		t.Fatalf("empty env should default to \"default\":\n%s", rec.Body.String())
+	}
+}
+
+// TestDecisionSinkMetrics_ExposesCountersWithEnvLabel pins the ADR-0036
+// substrate signals. The two drop reasons + flushed counter + flushed
+// bytes counter are the canonical observable surface.
+func TestDecisionSinkMetrics_ExposesCountersWithEnvLabel(t *testing.T) {
+	_, _, sinkMetrics, handler := prom.New("production")
+
+	sinkMetrics.IncDropped("buffer_full", 3)
+	sinkMetrics.IncDropped("flush_failed", 1)
+	sinkMetrics.IncFlushed(250, 12345)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+	want := []string{
+		`markup_decision_sink_dropped_total{env="production",reason="buffer_full"} 3`,
+		`markup_decision_sink_dropped_total{env="production",reason="flush_failed"} 1`,
+		`markup_decision_sink_flushed_total{env="production"} 250`,
+		`markup_decision_sink_flushed_bytes_total{env="production"} 12345`,
+	}
+	for _, w := range want {
+		if !strings.Contains(body, w) {
+			t.Errorf("missing %q in scrape body:\n%s", w, body)
+		}
 	}
 }
 
