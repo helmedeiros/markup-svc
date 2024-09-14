@@ -38,7 +38,7 @@ func TestE2EOTelSpansEmittedOverHTTP(t *testing.T) {
 	tracer := tp.Tracer("markup-svc-e2e")
 
 	loader := rulesLoader(rulesPath, "inmemory", "v0-otel", io.Discard)
-	handler, _, err := wireTracedHandler(loader, nil, tracer, guardrailsWire{}, metricsWiring{}, nil, nil, false, 1.0, 0, "", nil)
+	handler, _, err := wireTracedHandler(loader, nil, tracer, guardrailsWire{}, metricsWiring{}, observabilityWire{}, nil, false, 1.0, 0)
 	if err != nil {
 		t.Fatalf("wireTracedHandler: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestE2EOTelSpansContinueAfterReload(t *testing.T) {
 	tracer := tp.Tracer("markup-svc-e2e")
 
 	loader := rulesLoader(rulesPath, "inmemory", "v0-otel", io.Discard)
-	handler, _, err := wireTracedHandler(loader, nil, tracer, guardrailsWire{}, metricsWiring{}, nil, nil, false, 1.0, 0, "", nil)
+	handler, _, err := wireTracedHandler(loader, nil, tracer, guardrailsWire{}, metricsWiring{}, observabilityWire{}, nil, false, 1.0, 0)
 	if err != nil {
 		t.Fatalf("wireTracedHandler: %v", err)
 	}

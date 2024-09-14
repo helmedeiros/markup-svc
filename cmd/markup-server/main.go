@@ -202,7 +202,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if perr != nil {
 			return perr
 		}
-		handler = wireRouterHandler(router.New(routes, policy), tracer, holders, guardWiring, metricsWire, log, *env, decisionSinkInstance)
+		handler = wireRouterHandler(router.New(routes, policy), tracer, holders, guardWiring, metricsWire, observabilityWire{log: log, env: *env, sink: decisionSinkInstance})
 		ruleCount = total
 		bootSource = fmt.Sprintf("%d routes (policy=%s)", len(routes), *policyName)
 		bootAdapter = "router"
@@ -219,7 +219,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			bootAdapter = *adapter
 		}
 		body := newBodyLoader(bootAdapter, *modelVersion, stderr)
-		h, initialResult, err := wireTracedHandler(loader, body, tracer, guardWiring, metricsWire, log, diagnoseFn, *shadowAdmin, *shadowSampleRate, *shadowTimeout, *env, decisionSinkInstance)
+		h, initialResult, err := wireTracedHandler(loader, body, tracer, guardWiring, metricsWire, observabilityWire{log: log, env: *env, sink: decisionSinkInstance}, diagnoseFn, *shadowAdmin, *shadowSampleRate, *shadowTimeout)
 		if err != nil {
 			return err
 		}
@@ -296,7 +296,16 @@ func isReady() (string, bool) {
 // http.Handler is the production wiring -- same shape used by
 // tests so they exercise the real seam.
 func wireHandler(loader httpapi.Loader) (http.Handler, httpapi.ReloadResult, error) {
-	return wireTracedHandler(loader, nil, nil, guardrailsWire{}, metricsWiring{}, nil, nil, false, 1.0, 0, "", nil)
+	return wireTracedHandler(loader, nil, nil, guardrailsWire{}, metricsWiring{}, observabilityWire{}, nil, false, 1.0, 0)
+}
+
+// observabilityWire bundles the cross-cutting concerns shared by every
+// handler path: access-log target, process-level env label (ADR-0034),
+// and decision-event sink (ADR-0036). Zero value = disabled.
+type observabilityWire struct {
+	log  *jsonlog.Logger
+	env  string
+	sink decisionsink.Sink
 }
 
 // decisionSinkFlags is adapter-neutral; the s3sink.Config translation
@@ -442,7 +451,8 @@ func (r *routeFlagList) Set(v string) error {
 // holder. When holders is nil (legacy callers that did not build
 // per-route reload infrastructure), /admin/reload is not mounted
 // and POSTs return 404. See ADR-0011's follow-up commit.
-func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHolder, gw guardrailsWire, mw metricsWiring, log *jsonlog.Logger, env string, sink decisionsink.Sink) http.Handler {
+func wireRouterHandler(r *router.Router, tracer trace.Tracer, holders []routeHolder, gw guardrailsWire, mw metricsWiring, ow observabilityWire) http.Handler {
+	log, env, sink := ow.log, ow.env, ow.sink
 	var decideDecider markup.Decider = r
 	if tracer != nil {
 		decideDecider = mkotel.Wrap(decideDecider, tracer, mkotel.WithSpanName("markup.engine.evaluate"))
@@ -612,7 +622,8 @@ func buildRoutes(specs routeFlagList, stderr io.Writer) ([]router.Route, []route
 // holder's inner still flows through the traced layer and continues
 // emitting spans. The /admin/reload route keeps calling holder.Swap
 // directly -- swaps are administrative, not user traffic.
-func wireTracedHandler(loader httpapi.Loader, body httpapi.ReloadBodyLoader, tracer trace.Tracer, gw guardrailsWire, mw metricsWiring, log *jsonlog.Logger, diagnoseFn httpapi.DiagnoseFn, shadowAdmin bool, shadowSampleRate float64, shadowTimeout time.Duration, env string, sink decisionsink.Sink) (http.Handler, httpapi.ReloadResult, error) {
+func wireTracedHandler(loader httpapi.Loader, body httpapi.ReloadBodyLoader, tracer trace.Tracer, gw guardrailsWire, mw metricsWiring, ow observabilityWire, diagnoseFn httpapi.DiagnoseFn, shadowAdmin bool, shadowSampleRate float64, shadowTimeout time.Duration) (http.Handler, httpapi.ReloadResult, error) {
+	log, env, sink := ow.log, ow.env, ow.sink
 	initial, result, err := loader()
 	if err != nil {
 		return nil, httpapi.ReloadResult{}, err
