@@ -144,15 +144,19 @@ func TestDecisionSinkMetrics_ExposesCountersWithEnvLabel(t *testing.T) {
 	sinkMetrics.IncDropped("buffer_full", 3)
 	sinkMetrics.IncDropped("flush_failed", 1)
 	sinkMetrics.IncFlushed(250, 12345)
+	sinkMetrics.IncObject()
+	sinkMetrics.IncObject()
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
+
 	want := []string{
 		`markup_decision_sink_dropped_total{env="production",reason="buffer_full"} 3`,
 		`markup_decision_sink_dropped_total{env="production",reason="flush_failed"} 1`,
 		`markup_decision_sink_flushed_total{env="production"} 250`,
 		`markup_decision_sink_flushed_bytes_total{env="production"} 12345`,
+		`markup_decision_sink_objects_total{env="production"} 2`,
 	}
 	for _, w := range want {
 		if !strings.Contains(body, w) {

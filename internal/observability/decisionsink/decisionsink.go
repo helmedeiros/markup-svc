@@ -41,4 +41,5 @@ type Logger interface {
 type Metrics interface {
 	IncDropped(reason string, n int)
 	IncFlushed(events int, bytes int)
+	IncObject()
 }

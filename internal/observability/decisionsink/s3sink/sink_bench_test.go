@@ -127,3 +127,4 @@ type benchMetrics struct{}
 
 func (benchMetrics) IncDropped(string, int) {}
 func (benchMetrics) IncFlushed(int, int)    {}
+func (benchMetrics) IncObject()             {}

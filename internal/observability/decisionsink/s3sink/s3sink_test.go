@@ -131,6 +131,33 @@ func TestPublish_BufferFullDropsAndCounts(t *testing.T) {
 	}
 }
 
+// TestRun_FlushCallsIncObjectPerBatch pins the ADR-0036 object-count
+// contract: one metrics.IncObject call per successful PUT so an
+// operator can catch a wrong-bucket regression that would still tick
+// the bytes counter.
+func TestRun_FlushCallsIncObjectPerBatch(t *testing.T) {
+	srv := fakeS3Server(t, nil)
+	defer srv.Close()
+	mt := &countMetrics{}
+	s := newSinkForTestWithMetrics(t, srv.URL, Config{
+		Bucket:     "test",
+		BatchSize:  1024,
+		BatchEvery: time.Hour,
+		QueueSize:  10,
+	}, mt)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.Start(ctx)
+	s.Publish(bigEvent("obj-1"))
+	s.Publish(bigEvent("obj-2"))
+	s.Publish(bigEvent("obj-3"))
+	waitFor(t, func() bool {
+		mt.mu.Lock()
+		defer mt.mu.Unlock()
+		return mt.objects >= 1
+	}, 2*time.Second, "at least one object PUT")
+}
+
 // TestRun_FlushesOnByteBudget proves the BatchSize trigger fires the
 // flush before the time window expires. Uses a stub uploader (via the
 // httptest S3 mock below) so we observe the PUT.
@@ -378,6 +405,7 @@ type countMetrics struct {
 	mu      sync.Mutex
 	drops   []dropRecord
 	flushes int
+	objects int
 }
 
 type dropRecord struct {
@@ -395,6 +423,12 @@ func (c *countMetrics) IncFlushed(_ int, _ int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.flushes++
+}
+
+func (c *countMetrics) IncObject() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.objects++
 }
 
 func (c *countMetrics) hasDrop(reason string, atLeast int) bool {

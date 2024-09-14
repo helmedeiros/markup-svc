@@ -85,6 +85,7 @@ type DecisionSinkMetrics struct {
 	dropped *prometheus.CounterVec
 	flushed *prometheus.CounterVec
 	bytes   *prometheus.CounterVec
+	objects *prometheus.CounterVec
 }
 
 func (m *DecisionSinkMetrics) IncDropped(reason string, n int) {
@@ -94,6 +95,10 @@ func (m *DecisionSinkMetrics) IncDropped(reason string, n int) {
 func (m *DecisionSinkMetrics) IncFlushed(events int, byteCount int) {
 	m.flushed.WithLabelValues(m.env).Add(float64(events))
 	m.bytes.WithLabelValues(m.env).Add(float64(byteCount))
+}
+
+func (m *DecisionSinkMetrics) IncObject() {
+	m.objects.WithLabelValues(m.env).Inc()
 }
 
 // shadowFactorDeltaBuckets cover the realistic markup-factor delta
@@ -230,7 +235,14 @@ func New(env string) (*Sink, *ShadowSink, *DecisionSinkMetrics, http.Handler) {
 		},
 		[]string{"env"},
 	)
-	reg.MustRegister(count, dur, shadowAgree, shadowOneSided, shadowTimeouts, shadowErrs, shadowDelta, shadowSampled, shadowDuration, sinkDropped, sinkFlushed, sinkBytes)
+	sinkObjects := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "markup_decision_sink_objects_total",
+			Help: "Successful PUTs by the decision-sink adapter (ADR-0036). One increment per delivered batch object; a wrong-bucket regression that still emits bytes would not tick this counter. env per ADR-0034.",
+		},
+		[]string{"env"},
+	)
+	reg.MustRegister(count, dur, shadowAgree, shadowOneSided, shadowTimeouts, shadowErrs, shadowDelta, shadowSampled, shadowDuration, sinkDropped, sinkFlushed, sinkBytes, sinkObjects)
 	handler := promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
 	return &Sink{count: count, dur: dur},
 		&ShadowSink{
@@ -240,7 +252,7 @@ func New(env string) (*Sink, *ShadowSink, *DecisionSinkMetrics, http.Handler) {
 			factorDelta: shadowDelta, sampled: shadowSampled,
 			duration: shadowDuration,
 		},
-		&DecisionSinkMetrics{env: env, dropped: sinkDropped, flushed: sinkFlushed, bytes: sinkBytes},
+		&DecisionSinkMetrics{env: env, dropped: sinkDropped, flushed: sinkFlushed, bytes: sinkBytes, objects: sinkObjects},
 		handler
 }
 

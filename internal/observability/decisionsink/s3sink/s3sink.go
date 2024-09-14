@@ -146,6 +146,7 @@ func (s *Sink) run(ctx context.Context) {
 			atomic.AddUint64(&s.flushed, uint64(len(batch)))
 			if s.metrics != nil {
 				s.metrics.IncFlushed(len(batch), len(payload))
+				s.metrics.IncObject()
 			}
 			s.log("markup.decision.sink.flushed", map[string]any{
 				"events": len(batch),
