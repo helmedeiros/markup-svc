@@ -162,3 +162,7 @@ Operator-level recipes for common deployments live under [`docs/cookbook/`](docs
 ## Quality gates
 
 `make ci-local` runs `go vet`, race-detector tests, the coverage gate (80% floor), and the ADR-index check. Mirrors the CI workflow, which additionally computes the total coverage from `coverage.out`, posts it as a sticky PR comment on pull requests, and writes the live number to the orphan `badges` branch so the shields.io badge above auto-updates on every push to `main`.
+
+## License
+
+[MIT](LICENSE)
