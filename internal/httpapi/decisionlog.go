@@ -19,6 +19,7 @@ type decisionLogEntry struct {
 	decision   markup.Decision
 	noMatch    bool
 	decisionID string
+	journeyID  string // caller-supplied; opaque to markup-svc
 	outcome    string // ADR-0035 decide_outcome: ok | no_match | canceled | deadline_exceeded | error
 	errorMsg   string // populated only when outcome=error
 }

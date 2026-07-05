@@ -54,3 +54,4 @@ NNNN-short-decision-name.md
 | [0034](0034-env-label-on-shadow-metrics.md) | Env label on shadow metrics + access log + decide span | ✅ Accepted |
 | [0035](0035-decision-event-contract.md) | Decision-event contract — versioned schema for downstream consumers | ✅ Accepted |
 | [0036](0036-decision-event-substrate-minio.md) | Decision-event substrate — MinIO / S3-compatible batched JSONL | ✅ Accepted |
+| [0037](0037-decision-id-in-response-and-journey-id-in-request-context.md) | `decision_id` in `/decide` response + `journey_id` in `request_context` | ✅ Accepted |

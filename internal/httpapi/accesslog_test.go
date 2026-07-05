@@ -133,6 +133,49 @@ func TestWithAccessLog_NoMatchSetsNoMatchTrue(t *testing.T) {
 	}
 }
 
+// TestWithAccessLog_EchoesJourneyIDToAccessLogInput pins the ADR-0037
+// access-log surface: when the decision entry carries journey_id, the
+// markup-server.access event's attrs.input carries it too. The event
+// consumers (Kibana saved searches, on-call dashboards) can filter by
+// journey_id in the same block they already filter product_id or
+// customer_tier — no schema divergence between access log and event.
+func TestWithAccessLog_EchoesJourneyIDToAccessLogInput(t *testing.T) {
+	var buf bytes.Buffer
+	l := jsonlog.New(&buf)
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*r = *r.WithContext(withDecisionContext(r.Context(), decisionLogEntry{
+			request:    markup.Request{Country: "DE"},
+			decision:   markup.Decision{Rule: "x", MarkupFactor: 1.0, ModelVersion: "v1", EngineAdapter: "*x.Engine"},
+			decisionID: "det-x",
+			journeyID:  "journey-abc-123",
+			outcome:    "ok",
+		}))
+		w.WriteHeader(http.StatusOK)
+	})
+	WithAccessLog(l, "test", nil, inner).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/decide", nil))
+
+	dec := json.NewDecoder(&buf)
+	for dec.More() {
+		var m map[string]any
+		if err := dec.Decode(&m); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if m["msg"] != "markup-server.access" {
+			continue
+		}
+		attrs := m["attrs"].(map[string]any)
+		input, ok := attrs["input"].(map[string]any)
+		if !ok {
+			t.Fatalf("access log input missing or wrong shape: %v", attrs)
+		}
+		if input["journey_id"] != "journey-abc-123" {
+			t.Errorf("access log input.journey_id = %v, want journey-abc-123; input=%v", input["journey_id"], input)
+		}
+		return
+	}
+	t.Fatalf("markup-server.access event not emitted; buf=%q", buf.String())
+}
+
 func TestWithAccessLog_StampsEnvWhenSet(t *testing.T) {
 	var buf bytes.Buffer
 	l := jsonlog.New(&buf)

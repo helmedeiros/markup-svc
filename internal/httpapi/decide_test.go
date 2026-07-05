@@ -213,6 +213,80 @@ func TestDecide_OutcomeMapsAcrossErrorPaths(t *testing.T) {
 	}
 }
 
+// TestDecide_ResponseCarriesDecisionID pins the ADR-0037 contract:
+// the server-minted decision_id is echoed to the /decide response body
+// so callers (funnel-sim / real BFF) can join downstream funnel events
+// back to the priced offer without re-deriving the ID.
+func TestDecide_ResponseCarriesDecisionID(t *testing.T) {
+	stub := &stubDecider{decision: markup.Decision{MarkupFactor: 1.0, Rule: "x", ModelVersion: "v1", EngineAdapter: "*x.Engine"}}
+	h := httpapi.Decide(stub, httpapi.WithDecisionIDSource(func() string { return "det-fixed-42" }))
+	rec := post(h, `{"country":"DE"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	if body["decision_id"] != "det-fixed-42" {
+		t.Errorf("decision_id in response = %v, want det-fixed-42; body=%v", body["decision_id"], body)
+	}
+}
+
+// TestDecide_EmptyDecisionIDOmittedFromResponse pins the degraded-host
+// contract: when the IDSource returns "" (crypto/rand failure), the
+// response omits the decision_id key rather than emitting an empty
+// string that would look like a valid opaque ID to a consumer.
+func TestDecide_EmptyDecisionIDOmittedFromResponse(t *testing.T) {
+	stub := &stubDecider{decision: markup.Decision{MarkupFactor: 1.0, Rule: "x", ModelVersion: "v1", EngineAdapter: "*x.Engine"}}
+	h := httpapi.Decide(stub, httpapi.WithDecisionIDSource(func() string { return "" }))
+	rec := post(h, `{"country":"DE"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	if _, present := body["decision_id"]; present {
+		t.Errorf("decision_id must be omitted on empty ID; got body = %v", body)
+	}
+}
+
+// TestDecide_JourneyIDEchoedToRequestContext pins the ADR-0037 join
+// key: a caller-supplied journey_id inside request_context on the
+// /decide request body lands inside request_context on the emitted
+// markup.decision.v1 event.
+func TestDecide_JourneyIDEchoedToRequestContext(t *testing.T) {
+	stub := &stubDecider{decision: markup.Decision{MarkupFactor: 1.0, Rule: "x", ModelVersion: "v1", EngineAdapter: "*x.Engine"}}
+	h := httpapi.Decide(stub, httpapi.WithDecisionIDSource(func() string { return "det-x" }))
+	body := `{"country":"DE","request_context":{"journey_id":"journey-abc-123"}}`
+	attrs := captureDecisionEvent(t, h, body)
+	rc, ok := attrs["request_context"].(map[string]any)
+	if !ok {
+		t.Fatalf("request_context missing or wrong shape: %v", attrs["request_context"])
+	}
+	if rc["journey_id"] != "journey-abc-123" {
+		t.Errorf("request_context.journey_id = %v, want journey-abc-123; rc=%v", rc["journey_id"], rc)
+	}
+}
+
+// TestDecide_MissingJourneyIDLeavesKeyAbsent pins the additive-optional
+// contract: a request without journey_id emits an event whose
+// request_context has no journey_id key (not "").
+func TestDecide_MissingJourneyIDLeavesKeyAbsent(t *testing.T) {
+	stub := &stubDecider{decision: markup.Decision{MarkupFactor: 1.0, Rule: "x", ModelVersion: "v1", EngineAdapter: "*x.Engine"}}
+	h := httpapi.Decide(stub, httpapi.WithDecisionIDSource(func() string { return "det-x" }))
+	attrs := captureDecisionEvent(t, h, `{"country":"DE"}`)
+	rc, ok := attrs["request_context"].(map[string]any)
+	if !ok {
+		t.Fatalf("request_context missing or wrong shape: %v", attrs["request_context"])
+	}
+	if _, present := rc["journey_id"]; present {
+		t.Errorf("journey_id must be absent when not supplied; rc=%v", rc)
+	}
+}
+
 // TestDecide_EmptyDecisionIDSuppressesEvent pins the silent-skip
 // contract: if the IDSource returns "", the markup.decision.v1 event
 // is not emitted but the HTTP response succeeds normally. Crypto/rand

@@ -58,6 +58,9 @@ func WithAccessLog(l *jsonlog.Logger, env string, sink decisionsink.Sink, next h
 		var ctxFields map[string]any
 		if hasDecision {
 			ctxFields = inputFields(d.request)
+			if d.journeyID != "" {
+				ctxFields["journey_id"] = d.journeyID
+			}
 			attrs["input"] = ctxFields
 			if d.noMatch {
 				attrs["no_match"] = true
@@ -148,7 +151,7 @@ func decisionEventAttrs(d decisionLogEntry, env string, durationMS float64, ts s
 }
 
 func inputFields(r markup.Request) map[string]any {
-	out := map[string]any{}
+	out := make(map[string]any, 9)
 	if r.ProductID != "" {
 		out["product_id"] = r.ProductID
 	}

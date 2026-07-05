@@ -15,15 +15,20 @@ import (
 	"github.com/helmedeiros/markup-svc/internal/markup"
 )
 
+type decideRequestContext struct {
+	JourneyID string `json:"journey_id,omitempty"`
+}
+
 type decideRequest struct {
-	ProductID    string  `json:"product_id"`
-	Category     string  `json:"category"`
-	CustomerTier string  `json:"customer_tier"`
-	Channel      string  `json:"channel"`
-	Country      string  `json:"country"`
-	Inventory    string  `json:"inventory"`
-	TimeWindow   string  `json:"time_window"`
-	Amount       float64 `json:"amount"`
+	ProductID      string               `json:"product_id"`
+	Category       string               `json:"category"`
+	CustomerTier   string               `json:"customer_tier"`
+	Channel        string               `json:"channel"`
+	Country        string               `json:"country"`
+	Inventory      string               `json:"inventory"`
+	TimeWindow     string               `json:"time_window"`
+	Amount         float64              `json:"amount"`
+	RequestContext decideRequestContext `json:"request_context,omitempty"`
 }
 
 func (dr decideRequest) toMarkupRequest() markup.Request {
@@ -40,6 +45,7 @@ func (dr decideRequest) toMarkupRequest() markup.Request {
 }
 
 type decideResponse struct {
+	DecisionID    string  `json:"decision_id,omitempty"`
 	MarkupFactor  float64 `json:"markup_factor"`
 	Rule          string  `json:"rule"`
 	ModelVersion  string  `json:"model_version"`
@@ -48,8 +54,9 @@ type decideResponse struct {
 	EngineAdapter string  `json:"engine_adapter"`
 }
 
-func fromDecision(d markup.Decision) decideResponse {
+func fromDecision(d markup.Decision, decisionID string) decideResponse {
 	return decideResponse{
+		DecisionID:    decisionID,
 		MarkupFactor:  d.MarkupFactor,
 		Rule:          d.Rule,
 		ModelVersion:  d.ModelVersion,
@@ -102,7 +109,7 @@ func Decide(d markup.Decider, opts ...DecideOption) http.Handler {
 		dispatchShadow(ctx, cfg, req, decision, err)
 		outcome, errorMsg := outcomeFor(err)
 		entry := decisionLogEntry{
-			request: req, decisionID: decisionID,
+			request: req, decisionID: decisionID, journeyID: dr.RequestContext.JourneyID,
 			outcome: outcome, errorMsg: errorMsg,
 		}
 		switch outcome {
@@ -115,7 +122,7 @@ func Decide(d markup.Decider, opts ...DecideOption) http.Handler {
 		switch outcome {
 		case "ok":
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(fromDecision(decision))
+			_ = json.NewEncoder(w).Encode(fromDecision(decision, decisionID))
 		case "no_match":
 			writeError(w, http.StatusNotFound, "no rule matched")
 		default:
